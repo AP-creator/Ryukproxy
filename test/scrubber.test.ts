@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripAnsiCodes, collapseCarriageReturns } from '../src/scrubber.js';
+import { stripAnsiCodes, collapseCarriageReturns, collapseConsecutiveDuplicateLines } from '../src/scrubber.js';
 
 describe('stripAnsiCodes', () => {
   it('removes CSI escape sequences', () => {
@@ -35,5 +35,24 @@ describe('collapseCarriageReturns', () => {
   it('handles a redraw line followed by a real newline', () => {
     const input = 'a\rb\rc\nnext line\n';
     expect(collapseCarriageReturns(input)).toBe('c\nnext line\n');
+  });
+});
+
+describe('collapseConsecutiveDuplicateLines', () => {
+  it('collapses immediately repeated lines to one', () => {
+    const input = 'Cloning repository…\nCloning repository…\nCloning repository…\nRepository cloned';
+    expect(collapseConsecutiveDuplicateLines(input)).toBe(
+      'Cloning repository…\nRepository cloned'
+    );
+  });
+
+  it('does not collapse duplicates separated by other content', () => {
+    const input = 'A\nB\nA';
+    expect(collapseConsecutiveDuplicateLines(input)).toBe('A\nB\nA');
+  });
+
+  it('never collapses consecutive blank lines (may be meaningful spacing)', () => {
+    const input = 'para one\n\n\npara two';
+    expect(collapseConsecutiveDuplicateLines(input)).toBe('para one\n\n\npara two');
   });
 });

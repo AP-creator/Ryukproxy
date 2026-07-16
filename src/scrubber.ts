@@ -16,3 +16,15 @@ export function collapseCarriageReturns(text: string): string {
     })
     .join('\n');
 }
+
+export function collapseConsecutiveDuplicateLines(text: string): string {
+  const lines = text.split('\n');
+  const result: string[] = [];
+  for (const line of lines) {
+    const previous = result[result.length - 1];
+    if (line === '' || previous !== line) {
+      result.push(line);
+    }
+  }
+  return result.join('\n');
+}
