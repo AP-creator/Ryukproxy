@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { stripAnsiCodes, collapseCarriageReturns, collapseConsecutiveDuplicateLines } from '../src/scrubber.js';
+import { stripAnsiCodes, collapseCarriageReturns, collapseConsecutiveDuplicateLines, scrubToolResultText } from '../src/scrubber.js';
+import { SPINNER_NOISE_FIXTURE, SPINNER_NOISE_EXPECTED } from './fixtures/spinner-noise.js';
 
 describe('stripAnsiCodes', () => {
   it('removes CSI escape sequences', () => {
@@ -54,5 +55,22 @@ describe('collapseConsecutiveDuplicateLines', () => {
   it('never collapses consecutive blank lines (may be meaningful spacing)', () => {
     const input = 'para one\n\n\npara two';
     expect(collapseConsecutiveDuplicateLines(input)).toBe('para one\n\n\npara two');
+  });
+});
+
+describe('scrubToolResultText', () => {
+  it('reduces the real spinner-noise fixture to its final rendered state', () => {
+    expect(scrubToolResultText(SPINNER_NOISE_FIXTURE)).toBe(SPINNER_NOISE_EXPECTED);
+  });
+
+  it('reduces the fixture size by at least 60%', () => {
+    const scrubbed = scrubToolResultText(SPINNER_NOISE_FIXTURE);
+    const reduction = 1 - scrubbed.length / SPINNER_NOISE_FIXTURE.length;
+    expect(reduction).toBeGreaterThan(0.6);
+  });
+
+  it('leaves ordinary code/text content completely unchanged', () => {
+    const code = 'function add(a, b) {\n  return a + b;\n}\n';
+    expect(scrubToolResultText(code)).toBe(code);
   });
 });

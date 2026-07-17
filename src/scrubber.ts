@@ -28,3 +28,7 @@ export function collapseConsecutiveDuplicateLines(text: string): string {
   }
   return result.join('\n');
 }
+
+export function scrubToolResultText(text: string): string {
+  return collapseConsecutiveDuplicateLines(collapseCarriageReturns(stripAnsiCodes(text)));
+}
