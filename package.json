@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
-    "ryukproxy": "dist/wrapper.js"
+    "ryukproxy": "dist/cli.js"
   },
   "files": [
     "dist"
