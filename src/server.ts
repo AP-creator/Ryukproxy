@@ -6,9 +6,9 @@ import { logScrubEvent, DEFAULT_LOG_PATH } from './logger.js';
 
 function readRequestBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk) => (data += chunk));
-    req.on('end', () => resolve(data));
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
 }
@@ -57,10 +57,20 @@ export function createProxyServer(): Server {
       }
       res.end();
 
-      await logScrubEvent({ timestamp: new Date().toISOString(), bytesBefore, bytesAfter }, logPath);
+      try {
+        await logScrubEvent({ timestamp: new Date().toISOString(), bytesBefore, bytesAfter }, logPath);
+      } catch (logErr) {
+        // Logging is best-effort and must never affect a response that has already
+        // been sent to the client. Report to stderr and move on (fail open).
+        console.error('ryukproxy: failed to log scrub event', logErr);
+      }
     } catch (err) {
-      res.writeHead(502, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'ryukproxy_error', message: String(err) }));
+      if (!res.headersSent) {
+        res.writeHead(502, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'ryukproxy_error', message: String(err) }));
+      } else if (!res.writableEnded) {
+        res.end();
+      }
     }
   });
 }
