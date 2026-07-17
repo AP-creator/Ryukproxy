@@ -9,6 +9,8 @@ export async function forwardRequest(
   const url = new URL(path, upstreamUrl);
   const forwardHeaders = { ...headers };
   delete forwardHeaders['host'];
+  delete forwardHeaders['content-length'];
+  delete forwardHeaders['transfer-encoding'];
   return fetch(url, {
     method: 'POST',
     headers: forwardHeaders,

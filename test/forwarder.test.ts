@@ -48,4 +48,32 @@ describe('forwardRequest', () => {
     const json = await response.json();
     expect(json).toEqual({ ok: true });
   });
+
+  it('strips host, content-length, and transfer-encoding headers before forwarding', async () => {
+    const testBody = '{"scrubbed":true}';
+    const response = await forwardRequest(
+      '/v1/messages',
+      {
+        'content-type': 'application/json',
+        'x-api-key': 'test-key',
+        'host': 'proxy.example.com',
+        'content-length': '9999',
+        'transfer-encoding': 'chunked',
+      },
+      testBody,
+      mockUpstreamUrl
+    );
+
+    expect(response.status).toBe(200);
+    // Verify the forwarded host header is NOT the one we tried to send
+    expect(receivedHeaders['host']).not.toBe('proxy.example.com');
+    // Verify content-length is recalculated correctly, not the stale value we passed
+    expect(receivedHeaders['content-length']).not.toBe('9999');
+    expect(receivedHeaders['content-length']).toBe(String(Buffer.byteLength(testBody)));
+    // Verify transfer-encoding was stripped and not forwarded
+    expect(receivedHeaders['transfer-encoding']).toBeUndefined();
+    // Verify other headers still came through
+    expect(receivedHeaders['x-api-key']).toBe('test-key');
+    expect(receivedHeaders['content-type']).toBe('application/json');
+  });
 });
