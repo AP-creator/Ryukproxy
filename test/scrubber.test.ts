@@ -73,4 +73,23 @@ describe('scrubToolResultText', () => {
     const code = 'function add(a, b) {\n  return a + b;\n}\n';
     expect(scrubToolResultText(code)).toBe(code);
   });
+
+  // Regression tests for I3: collapsing consecutive duplicate lines is only
+  // lossless when the duplication is actually terminal-redraw noise (a line
+  // that carried an ANSI escape or a bare \r before stripping). Two real,
+  // independently-emitted identical lines -- e.g. two PASS results, or a
+  // linter emitting the same message for two different locations -- must
+  // never be collapsed, even though stripAnsiCodes running first can make
+  // two originally-different lines byte-identical.
+
+  it('preserves two identical adjacent PLAIN lines (no ANSI, no \\r) -- e.g. two real PASS results', () => {
+    const input = 'PASS\nPASS';
+    expect(scrubToolResultText(input)).toBe('PASS\nPASS');
+  });
+
+  it('collapses two adjacent redraw lines (carried ANSI) that render identically', () => {
+    const redrawLine = '\x1b[1G\x1b[Jfoo';
+    const input = `${redrawLine}\n${redrawLine}`;
+    expect(scrubToolResultText(input)).toBe('foo');
+  });
 });
