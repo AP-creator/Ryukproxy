@@ -60,6 +60,8 @@ export function createProxyServer(): Server {
       // headers and let Node reframe the response from the real decompressed
       // bytes; otherwise a compressed upstream response reaches the client as a
       // gzip-labelled but already-decompressed body (decode failure/truncation).
+      // This list is deliberately scoped to the framing headers that break given
+      // undici's auto-decompression — not a general hop-by-hop header scrub.
       delete responseHeaders['content-encoding'];
       delete responseHeaders['content-length'];
       delete responseHeaders['transfer-encoding'];

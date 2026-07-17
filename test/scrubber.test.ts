@@ -92,4 +92,13 @@ describe('scrubToolResultText', () => {
     const input = `${redrawLine}\n${redrawLine}`;
     expect(scrubToolResultText(input)).toBe('foo');
   });
+
+  it('preserves two identical adjacent COLOR-only lines (SGR is not a redraw) -- e.g. two colored PASS results', () => {
+    // How pytest/jest/eslint --color actually emit repeated results: wrapped in
+    // SGR color, not cursor-movement codes. Stripping color is fine (cosmetic
+    // noise), but dropping a whole duplicate line would lose real content.
+    const coloredPass = '\x1b[32mPASS\x1b[0m';
+    const input = `${coloredPass}\n${coloredPass}`;
+    expect(scrubToolResultText(input)).toBe('PASS\nPASS');
+  });
 });

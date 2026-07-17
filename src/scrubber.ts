@@ -1,9 +1,12 @@
 const ANSI_CSI_PATTERN = /\x1b\[[0-9;?]*[a-zA-Z]/g;
 
-// Non-global detector for "did this line carry an ANSI escape introducer".
-// Kept separate from ANSI_CSI_PATTERN so its stateful lastIndex (from the /g
-// flag) can never leak into a .test() call.
-const ANSI_INTRODUCER = /\x1b\[/;
+// Non-global detector for "did this line carry a cursor-movement/erase CSI"
+// — the escapes a spinner/progress redraw actually uses (cursor moves A–H,
+// erase J/K, scroll S/T, position f, save/restore s/u). Deliberately EXCLUDES
+// SGR color codes (final byte `m`): a colored line like `\x1b[32mPASS\x1b[0m`
+// is cosmetic, not a redraw, and two of them must NOT be treated as duplicate
+// noise. Kept non-global so its lastIndex can never leak into a .test() call.
+const REDRAW_CSI = /\x1b\[[0-9;?]*[A-HJKSTfsu]/;
 
 export function stripAnsiCodes(text: string): string {
   return text.replace(ANSI_CSI_PATTERN, '');
@@ -17,6 +20,11 @@ function finalRedrawSegment(line: string): string {
   return segments[segments.length - 1];
 }
 
+// NOTE: collapseCarriageReturns and collapseConsecutiveDuplicateLines are no
+// longer part of the active scrubToolResultText pipeline (which processes lines
+// with redraw-awareness inline). They are retained as independently-tested,
+// standalone text primitives — kept intentionally, not dead code to delete
+// blindly.
 export function collapseCarriageReturns(text: string): string {
   // Protect real CRLF line endings before treating bare \r as a redraw marker.
   const withoutCrlf = text.replace(/\r\n/g, '\n');
@@ -51,7 +59,7 @@ export function scrubToolResultText(text: string): string {
   let prevRendered: string | undefined;
 
   for (const rawLine of rawLines) {
-    const isRedraw = ANSI_INTRODUCER.test(rawLine) || rawLine.includes('\r');
+    const isRedraw = REDRAW_CSI.test(rawLine) || rawLine.includes('\r');
     const renderedLine = stripAnsiCodes(finalRedrawSegment(rawLine));
 
     const collapsible =
