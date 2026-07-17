@@ -85,7 +85,22 @@ export async function ensureProxyRunning(): Promise<boolean> {
     child.unref();
     writeFileSync(PID_FILE, String(child.pid));
 
-    return await waitForProxyListening(PORT);
+    if (!(await waitForProxyListening(PORT))) {
+      return false;
+    }
+
+    // The TCP probe only confirms *something* answers on the port -- it
+    // could be a stale orphaned process left over from an earlier run, not
+    // the child we just spawned (e.g. the new child hit EADDRINUSE against
+    // that orphan and died immediately). Confirm the specific child is
+    // still alive before declaring success; otherwise a dead child gets
+    // credited for a stale listener's success and the pidfile ends up
+    // permanently tracking a dead PID.
+    if (!child.pid || !isProcessRunning(child.pid)) {
+      return false;
+    }
+
+    return true;
   } catch {
     return false;
   }

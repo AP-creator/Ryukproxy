@@ -31,6 +31,10 @@ describe('ensureProxyRunning', () => {
     vi.resetModules();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('spawns the proxy, writes a pidfile, and confirms it is listening', async () => {
     const spawnMock = vi.fn(() => ({ pid: 4242, unref: vi.fn() }));
     const writeFileSyncMock = vi.fn();
@@ -48,6 +52,15 @@ describe('ensureProxyRunning', () => {
     }));
 
     vi.doMock('node:net', () => createNetMock('connect'));
+
+    // isProcessRunning(child.pid) shells out to the real process.kill(pid, 0);
+    // simulate the freshly-spawned child (fake pid 4242) actually being alive.
+    vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === 4242) {
+        return true;
+      }
+      throw new Error('ESRCH');
+    });
 
     const { ensureProxyRunning } = await import('../src/wrapper.js');
     const started = await ensureProxyRunning();
@@ -100,6 +113,16 @@ describe('ensureProxyRunning', () => {
 
     vi.doMock('node:net', () => createNetMock('connect'));
 
+    // The stale pidfile pid (999999999) must read as dead (real OS behavior
+    // already guarantees this), and the freshly-spawned child (fake pid
+    // 5555) must read as alive so the post-health-check liveness gate passes.
+    vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === 5555) {
+        return true;
+      }
+      throw new Error('ESRCH');
+    });
+
     const { ensureProxyRunning } = await import('../src/wrapper.js');
     const started = await ensureProxyRunning();
 
@@ -130,6 +153,37 @@ describe('ensureProxyRunning', () => {
     const started = await ensureProxyRunning();
 
     expect(started).toBe(false);
+  });
+
+  it('returns false if the health check passes but the just-spawned child is not actually alive', async () => {
+    // Simulates a stale orphaned proxy still holding the port: the TCP probe
+    // succeeds (mode: 'connect'), but the child spawn() just returned is not
+    // a real running process (pid chosen to be practically guaranteed not to
+    // exist, same technique as the "dead pidfile" test above). This must not
+    // be credited as success -- the port answering doesn't prove *our* child
+    // is the one that's alive and serving.
+    const spawnMock = vi.fn(() => ({ pid: 999999998, unref: vi.fn() }));
+    const writeFileSyncMock = vi.fn();
+
+    vi.doMock('node:fs', () => ({
+      existsSync: vi.fn(() => false),
+      readFileSync: vi.fn(() => ''),
+      writeFileSync: writeFileSyncMock,
+      mkdirSync: vi.fn(),
+    }));
+
+    vi.doMock('node:child_process', () => ({
+      spawn: spawnMock,
+      spawnSync: vi.fn(),
+    }));
+
+    vi.doMock('node:net', () => createNetMock('connect'));
+
+    const { ensureProxyRunning } = await import('../src/wrapper.js');
+    const started = await ensureProxyRunning();
+
+    expect(started).toBe(false);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
   it('returns false (fail open) if the spawned proxy never starts listening', async () => {
@@ -196,6 +250,15 @@ describe('runClaudeWithProxy', () => {
     }));
 
     vi.doMock('node:net', () => createNetMock('connect'));
+
+    // isProcessRunning(child.pid) shells out to the real process.kill(pid, 0);
+    // simulate the freshly-spawned child (fake pid 4242) actually being alive.
+    vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === 4242) {
+        return true;
+      }
+      throw new Error('ESRCH');
+    });
 
     const { runClaudeWithProxy } = await import('../src/wrapper.js');
     await runClaudeWithProxy(['--version']);
