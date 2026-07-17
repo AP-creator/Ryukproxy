@@ -1,4 +1,5 @@
 import { createServer, IncomingMessage, Server } from 'node:http';
+import { parse as losslessParse, stringify as losslessStringify } from 'lossless-json';
 import { scrubRequestBody } from './scrub-body.js';
 import type { AnthropicRequestBody } from './types.js';
 import { forwardRequest, DEFAULT_UPSTREAM_URL } from './forwarder.js';
@@ -24,8 +25,16 @@ export function createProxyServer(): Server {
 
       let scrubbedBody = rawBody;
       try {
-        const parsed = JSON.parse(rawBody) as AnthropicRequestBody;
-        scrubbedBody = JSON.stringify(scrubRequestBody(parsed));
+        // Use lossless-json instead of JSON.parse/JSON.stringify: a plain
+        // parse->stringify round-trip is NOT an identity transform for numbers
+        // outside the safe integer range, -0, 1e21, or trailing-zero decimals
+        // like 1.0 -- all of which would be silently rewritten even in content
+        // the scrubber never touches (e.g. a tool_use input echoed back on every
+        // subsequent turn). lossless-json preserves the exact source text of
+        // every number via LosslessNumber, so the only bytes that ever change
+        // are the ones scrubToolResultText actually rewrites.
+        const parsed = losslessParse(rawBody) as AnthropicRequestBody;
+        scrubbedBody = losslessStringify(scrubRequestBody(parsed)) ?? rawBody;
       } catch {
         // Not valid JSON, or not the shape we expect — forward unmodified rather than guess.
         scrubbedBody = rawBody;
