@@ -4,7 +4,28 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { createProxyServer } from '../src/server.js';
+
+// Spin up a fresh proxy pointed at a specific upstream URL, without disturbing
+// the shared proxy/upstream env used by the other tests.
+async function startProxyAgainst(upstreamUrl: string): Promise<{ url: string; server: Server }> {
+  const previousUpstream = process.env.RYUKPROXY_UPSTREAM_URL;
+  process.env.RYUKPROXY_UPSTREAM_URL = upstreamUrl;
+  const server = createProxyServer();
+  process.env.RYUKPROXY_UPSTREAM_URL = previousUpstream;
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const url = address && typeof address === 'object' ? `http://127.0.0.1:${address.port}` : '';
+  return { url, server };
+}
+
+async function listen(server: Server): Promise<string> {
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  return address && typeof address === 'object' ? `http://127.0.0.1:${address.port}` : '';
+}
 
 let mockUpstream: Server;
 let mockUpstreamUrl: string;
@@ -269,5 +290,106 @@ describe('fail-open guarantees', () => {
       req.write(firstHalf);
       setTimeout(() => req.end(secondHalf), 20);
     });
+  });
+});
+
+describe('response passthrough hardening', () => {
+  it('survives a client aborting mid-stream and keeps serving later requests (I1)', async () => {
+    // Slow upstream: send headers + one chunk, then hold the connection open so
+    // the client can drop its socket while the proxy is mid-write. Without
+    // res.on('error') + abort handling, the client disconnect makes `res` emit
+    // an uncaught 'error' and crashes the proxy process. fetch() resolves on
+    // headers (not full body), so we use Node's http client and destroy the
+    // socket after the first response chunk to force a true mid-stream abort.
+    let holdOpen: ReturnType<typeof setTimeout> | undefined;
+    const slowUpstream = createServer((req, res) => {
+      req.on('data', () => {});
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.write('{"partial":');
+        // Hold, then finish — the proxy's stream loop resumes here and hits the
+        // write/end-after-client-disconnect path that pre-fix would crash on.
+        holdOpen = setTimeout(() => res.end('"done"}'), 300);
+      });
+    });
+    const slowUpstreamUrl = await listen(slowUpstream);
+    const { url: proxyAbortUrl, server: abortProxy } = await startProxyAgainst(slowUpstreamUrl);
+    const abortPort = Number(new URL(proxyAbortUrl).port);
+
+    try {
+      // Fire a request, then drop the client socket ~150ms in — while the proxy
+      // is mid-stream (upstream hasn't finished). fetch() resolves on headers, so
+      // Node's http client is used to control the raw socket. Timing (not a data
+      // event) drives the abort, since a tiny first chunk may be buffered.
+      await new Promise<void>((resolve) => {
+        const req = httpRequest(
+          { hostname: '127.0.0.1', port: abortPort, path: '/v1/messages', method: 'POST' },
+          (res) => {
+            res.on('data', () => {});
+            res.on('error', () => {});
+          }
+        );
+        req.on('error', () => {}); // ignore the ECONNRESET from our own destroy
+        req.end(JSON.stringify({ messages: [] }));
+        setTimeout(() => {
+          req.destroy();
+          resolve();
+        }, 150);
+      });
+
+      // Let the upstream finish and the proxy process the client disconnect (the
+      // crash, if any, happens here), then prove the process is still alive.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const { url: healthyUrl, server: healthyProxy } = await startProxyAgainst(mockUpstreamUrl);
+      try {
+        const followUp = await fetch(`${healthyUrl}/v1/messages`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ messages: [] }),
+        });
+        expect(followUp.status).toBe(200);
+      } finally {
+        await new Promise<void>((resolve) => healthyProxy.close(() => resolve()));
+      }
+    } finally {
+      if (holdOpen) clearTimeout(holdOpen);
+      await new Promise<void>((resolve) => abortProxy.close(() => resolve()));
+      await new Promise<void>((resolve) => slowUpstream.close(() => resolve()));
+    }
+  });
+
+  it('delivers a gzip-compressed upstream response as intact decompressed content (I2)', async () => {
+    // undici (the proxy's fetch) transparently decompresses the gzip body, so if
+    // the proxy forwards the upstream's `content-encoding: gzip` verbatim the
+    // client tries to gunzip already-plain bytes and the read fails/corrupts.
+    const payload = JSON.stringify({ id: 'msg_gzip', content: [{ type: 'text', text: 'compressed-ok' }] });
+    const gzipped = gzipSync(Buffer.from(payload, 'utf8'));
+    const gzipUpstream = createServer((req, res) => {
+      req.on('data', () => {});
+      req.on('end', () => {
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'content-encoding': 'gzip',
+          'content-length': String(gzipped.length),
+        });
+        res.end(gzipped);
+      });
+    });
+    const gzipUpstreamUrl = await listen(gzipUpstream);
+    const { url: gzipProxyUrl, server: gzipProxy } = await startProxyAgainst(gzipUpstreamUrl);
+
+    try {
+      const response = await fetch(`${gzipProxyUrl}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: [] }),
+      });
+      expect(response.status).toBe(200);
+      const json = await response.json();
+      expect(json).toEqual({ id: 'msg_gzip', content: [{ type: 'text', text: 'compressed-ok' }] });
+    } finally {
+      await new Promise<void>((resolve) => gzipProxy.close(() => resolve()));
+      await new Promise<void>((resolve) => gzipUpstream.close(() => resolve()));
+    }
   });
 });

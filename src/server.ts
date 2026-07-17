@@ -54,17 +54,51 @@ export function createProxyServer(): Server {
       upstreamResponse.headers.forEach((value, key) => {
         responseHeaders[key] = value;
       });
+      // undici transparently decompresses gzip/br upstream bodies, so the
+      // upstream's content-encoding and (compressed) content-length no longer
+      // describe the bytes we actually send. Drop those plus hop-by-hop framing
+      // headers and let Node reframe the response from the real decompressed
+      // bytes; otherwise a compressed upstream response reaches the client as a
+      // gzip-labelled but already-decompressed body (decode failure/truncation).
+      delete responseHeaders['content-encoding'];
+      delete responseHeaders['content-length'];
+      delete responseHeaders['transfer-encoding'];
+      delete responseHeaders['connection'];
       res.writeHead(upstreamResponse.status, responseHeaders);
+
+      // A client that disconnects mid-stream makes `res` emit 'error' (EPIPE /
+      // write-after-end) asynchronously — the surrounding try/catch cannot catch
+      // an emitter event on a later tick, so an unhandled 'error' would crash the
+      // whole proxy. Swallow it (a dead client socket is not a proxy failure) and
+      // stop pumping an upstream body nobody is listening to.
+      let clientGone = false;
+      res.on('error', () => {
+        clientGone = true;
+      });
+      req.on('aborted', () => {
+        clientGone = true;
+      });
+      res.on('close', () => {
+        if (!res.writableEnded) clientGone = true;
+      });
 
       if (upstreamResponse.body) {
         const reader = upstreamResponse.body.getReader();
         while (true) {
+          if (clientGone) {
+            await reader.cancel().catch(() => {});
+            break;
+          }
           const { done, value } = await reader.read();
           if (done) break;
+          if (clientGone) {
+            await reader.cancel().catch(() => {});
+            break;
+          }
           res.write(value);
         }
       }
-      res.end();
+      if (!res.writableEnded) res.end();
 
       try {
         await logScrubEvent({ timestamp: new Date().toISOString(), bytesBefore, bytesAfter }, logPath);
