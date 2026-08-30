@@ -35,6 +35,14 @@ function finalRedrawSegment(line: string): string {
 // with redraw-awareness inline). They are retained as independently-tested,
 // standalone text primitives — kept intentionally, not dead code to delete
 // blindly.
+//
+// Their semantics have since DIVERGED from the pipeline's, so neither can be
+// wired back in as-is:
+//   - collapseCarriageReturns rewrites \r\n to \n; the pipeline preserves the
+//     original line endings byte-for-byte.
+//   - collapseConsecutiveDuplicateLines collapses any two adjacent identical
+//     lines; the pipeline only collapses lines that were actually redraws, so
+//     that two real identical lines of output survive.
 export function collapseCarriageReturns(text: string): string {
   // Protect real CRLF line endings before treating bare \r as a redraw marker.
   const withoutCrlf = text.replace(/\r\n/g, '\n');
