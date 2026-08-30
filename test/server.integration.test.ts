@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { createProxyServer } from '../src/server.js';
+import { HEALTH_PATH, HEALTH_SERVICE_ID } from '../src/health.js';
 
 // Spin up a fresh proxy pointed at a specific upstream URL, without disturbing
 // the shared proxy/upstream env used by the other tests.
@@ -130,6 +131,37 @@ describe('createProxyServer', () => {
     expect(response.status).toBe(200);
     expect(receivedMethod).toBe('GET');
     expect(receivedUrl).toBe('/v1/models?limit=2');
+  });
+
+  it('answers its own health endpoint locally instead of forwarding it upstream', async () => {
+    receivedUrl = '';
+    const response = await fetch(`${proxyUrl}${HEALTH_PATH}`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ service: HEALTH_SERVICE_ID, pid: process.pid });
+    // The upstream must never see it — that is the whole point of a local probe.
+    expect(receivedUrl).toBe('');
+  });
+
+  it('does not log a scrub event for a health check', async () => {
+    // A dedicated proxy with its own untouched log path: the shared one is
+    // written asynchronously after each response, so counting lines around a
+    // request would race the other tests in this file.
+    const ownLogPath = join(tempDir, 'health-only.jsonl');
+    const previousLogPath = process.env.RYUKPROXY_LOG_PATH;
+    process.env.RYUKPROXY_LOG_PATH = ownLogPath;
+    const { url, server } = await startProxyAgainst(mockUpstreamUrl);
+    process.env.RYUKPROXY_LOG_PATH = previousLogPath;
+
+    try {
+      const response = await fetch(`${url}${HEALTH_PATH}`);
+      expect(response.status).toBe(200);
+
+      // A probe is not proxied traffic; counting it would skew `ryukproxy stats`.
+      await expect(readFile(ownLogPath, 'utf8')).rejects.toThrow(/ENOENT/);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it('forwards a POST to a non-messages endpoint without disturbing its body', async () => {

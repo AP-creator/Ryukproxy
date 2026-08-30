@@ -4,6 +4,7 @@ import { scrubRequestBody } from './scrub-body.js';
 import type { AnthropicRequestBody } from './types.js';
 import { forwardRequest, DEFAULT_UPSTREAM_URL } from './forwarder.js';
 import { logScrubEvent, DEFAULT_LOG_PATH } from './logger.js';
+import { HEALTH_PATH, HEALTH_SERVICE_ID } from './health.js';
 
 function readRequestBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -20,6 +21,16 @@ export function createProxyServer(): Server {
 
   return createServer(async (req, res) => {
     try {
+      // Ryukproxy's own liveness probe: answered here, never forwarded, and
+      // never logged as a scrub event (it isn't proxied traffic, and counting
+      // it would skew `ryukproxy stats`). The launcher uses it to tell an
+      // actual Ryukproxy from any other process that happens to hold the port.
+      if (req.method === 'GET' && (req.url ?? '').split('?')[0] === HEALTH_PATH) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ service: HEALTH_SERVICE_ID, pid: process.pid }));
+        return;
+      }
+
       const rawBody = await readRequestBody(req);
       const bytesBefore = Buffer.byteLength(rawBody, 'utf8');
 
