@@ -6,19 +6,35 @@ const BODYLESS_METHODS = new Set(['GET', 'HEAD']);
 
 /**
  * Resolve an incoming request path against the upstream base URL, keeping any
- * base path the upstream carries.
+ * base path the upstream carries and never leaving the upstream's origin.
+ *
+ * Two things go wrong if the path is simply resolved relative to the base.
  *
  * `new URL('/v1/messages', 'https://host/anthropic')` resolves against the
  * *origin* and yields 'https://host/v1/messages' -- silently dropping the
- * '/anthropic' prefix a gateway-style upstream needs. Joining the two paths
- * explicitly keeps the prefix, and normalising the trailing slash off the base
- * avoids emitting '//' at the seam.
+ * '/anthropic' prefix a gateway-style upstream needs.
+ *
+ * Worse, the path comes from whatever connected to the local port, and a
+ * protocol-relative one ('//elsewhere.example/v1/messages') resolves to a
+ * different host entirely. Since every request is forwarded with the user's
+ * x-api-key attached, that would turn the proxy into a way for anything able
+ * to reach 127.0.0.1 to post that key to a server of its choosing. So the
+ * origin is pinned from the configured upstream and only the path and query
+ * are taken from the request.
  */
 export function resolveUpstreamUrl(path: string, upstreamUrl: string): URL {
   const base = new URL(upstreamUrl);
   const prefix = base.pathname.replace(/\/+$/, '');
-  const requestPath = path.startsWith('/') ? path : `/${path}`;
-  return new URL(prefix + requestPath, base);
+
+  // Parsed against a throwaway origin purely to split path from query; any
+  // host the request tried to smuggle in is discarded with it.
+  const requested = new URL(path, 'http://ryukproxy.invalid');
+
+  const url = new URL(base);
+  url.pathname = prefix + requested.pathname;
+  url.search = requested.search;
+  url.hash = '';
+  return url;
 }
 
 export async function forwardRequest(

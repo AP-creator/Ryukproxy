@@ -32,7 +32,9 @@ fixture so a change that weakens scrubbing fails the build.
 - **Non-JSON requests are byte-exact.** A multipart file upload is forwarded
   as the raw bytes that arrived — it is never decoded, scrubbed, or re-encoded.
 - **Your API key is never read, logged, or stored.** It passes through in the
-  headers as-is.
+  headers as-is, and only ever to the configured upstream: the origin is pinned
+  from `RYUKPROXY_UPSTREAM_URL`, so a request arriving on the local port cannot
+  name a destination of its own.
 - **Fails open.** A scrubber error, a malformed body, or a proxy that won't
   start degrades to "no savings", never to a blocked session or corrupted
   content.

@@ -52,21 +52,24 @@ export function createProxyServer(): Server {
 
       // Anything that isn't JSON is forwarded as the exact bytes that arrived.
       let scrubbedBody: string | Buffer = rawBody;
-      if (looksLikeJson(req.headers['content-type'])) try {
-        // Use lossless-json instead of JSON.parse/JSON.stringify: a plain
-        // parse->stringify round-trip is NOT an identity transform for numbers
-        // outside the safe integer range, -0, 1e21, or trailing-zero decimals
-        // like 1.0 -- all of which would be silently rewritten even in content
-        // the scrubber never touches (e.g. a tool_use input echoed back on every
-        // subsequent turn). lossless-json preserves the exact source text of
-        // every number via LosslessNumber, so the only bytes that ever change
-        // are the ones scrubToolResultText actually rewrites.
-        const parsed = losslessParse(rawBody.toString('utf8')) as AnthropicRequestBody;
-        scrubbedBody = losslessStringify(scrubRequestBody(parsed)) ?? rawBody;
-      } catch {
-        // Not valid JSON, or not the shape we expect — forward the original
-        // bytes rather than guess, and never a re-encoded approximation of them.
-        scrubbedBody = rawBody;
+      if (looksLikeJson(req.headers['content-type'])) {
+        try {
+          // Use lossless-json instead of JSON.parse/JSON.stringify: a plain
+          // parse->stringify round-trip is NOT an identity transform for
+          // numbers outside the safe integer range, -0, 1e21, or trailing-zero
+          // decimals like 1.0 -- all of which would be silently rewritten even
+          // in content the scrubber never touches (e.g. a tool_use input echoed
+          // back on every subsequent turn). lossless-json preserves the exact
+          // source text of every number via LosslessNumber, so the only bytes
+          // that ever change are the ones scrubToolResultText actually
+          // rewrites.
+          const parsed = losslessParse(rawBody.toString('utf8')) as AnthropicRequestBody;
+          scrubbedBody = losslessStringify(scrubRequestBody(parsed)) ?? rawBody;
+        } catch {
+          // Not valid JSON, or not the shape we expect — forward the original
+          // bytes rather than guess, and never a re-encoded approximation of them.
+          scrubbedBody = rawBody;
+        }
       }
 
       const bytesAfter = Buffer.byteLength(scrubbedBody);

