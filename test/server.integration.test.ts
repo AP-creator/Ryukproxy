@@ -179,6 +179,82 @@ describe('createProxyServer', () => {
   });
 });
 
+describe('concurrent requests', () => {
+  it('keeps parallel requests independent and logs each one exactly once', async () => {
+    // Claude Code issues requests in parallel (a background haiku call
+    // alongside the main stream). Any shared mutable state in the handler would
+    // show up here as a body scrubbed into the wrong response, or as torn log
+    // lines from interleaved appends.
+    const concurrency = 12;
+    const bodies = new Map<number, string>();
+    const parallelUpstream = createServer((req, res) => {
+      let data = '';
+      req.on('data', (chunk) => (data += chunk));
+      req.on('end', () => {
+        const parsed = JSON.parse(data);
+        bodies.set(parsed.marker, parsed.messages[0].content[0].content);
+        // Stagger the replies so responses complete out of request order.
+        setTimeout(
+          () => {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ marker: parsed.marker }));
+          },
+          (parsed.marker % 4) * 15
+        );
+      });
+    });
+    const parallelUpstreamUrl = await listen(parallelUpstream);
+
+    const ownLogPath = join(tempDir, `concurrent-${Date.now()}.jsonl`);
+    const previousLogPath = process.env.RYUKPROXY_LOG_PATH;
+    process.env.RYUKPROXY_LOG_PATH = ownLogPath;
+    const { url, server } = await startProxyAgainst(parallelUpstreamUrl);
+    process.env.RYUKPROXY_LOG_PATH = previousLogPath;
+
+    try {
+      const results = await Promise.all(
+        Array.from({ length: concurrency }, async (_, marker) => {
+          const noisy = `\x1b[2K\r working ${marker}…\x1b[2K\r working ${marker}..\x1b[2K\r done ${marker}\n`;
+          const response = await fetch(`${url}/v1/messages`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              marker,
+              messages: [
+                {
+                  role: 'user',
+                  content: [{ type: 'tool_result', tool_use_id: `t${marker}`, content: noisy }],
+                },
+              ],
+            }),
+          });
+          return { marker, status: response.status, echoed: (await response.json()).marker };
+        })
+      );
+
+      expect(results.every((r) => r.status === 200)).toBe(true);
+      // Each caller got its own response back, not another request's.
+      expect(results.map((r) => r.echoed)).toEqual(results.map((r) => r.marker));
+      // And each body was scrubbed on its own, with no cross-contamination.
+      expect(bodies.size).toBe(concurrency);
+      for (const [marker, content] of bodies) {
+        expect(content).toBe(` done ${marker}\n`);
+      }
+
+      // Logging happens after each response is sent, so give the appends a beat.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const logLines = (await readFile(ownLogPath, 'utf8')).trim().split('\n');
+      expect(logLines).toHaveLength(concurrency);
+      for (const line of logLines) {
+        expect(() => JSON.parse(line)).not.toThrow();
+      }
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => parallelUpstream.close(() => resolve()));
+    }
+  });
+});
+
 describe('upstream origin pinning', () => {
   it('does not forward off-host when the request line names another origin', async () => {
     // fetch() would normalise this away, so the request target is written

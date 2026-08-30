@@ -82,4 +82,58 @@ describe('lossless number round-trip (C1)', () => {
     expect(receivedBody).toContain('"huge":1e21');
     expect(receivedBody).toContain('"price":1.0');
   });
+
+  it('forwards a noise-free request byte-for-byte in the shape Claude Code sends', async () => {
+    // Built with JSON.stringify, which is what an HTTP client actually puts on
+    // the wire: compact, literal UTF-8, escaping only what JSON requires. The
+    // parse -> scrub -> stringify round-trip must be a complete no-op on it.
+    const requestBody = JSON.stringify({
+      model: 'claude-opus-4',
+      max_tokens: 4096,
+      system: 'Stay exactly as written.',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call1',
+              content: 'café 世界 🎉\n\ttabbed "quoted" back\\slash\ndone\n',
+            },
+          ],
+        },
+        { role: 'assistant', content: 'function add(a, b) {\n  return a + b;\n}\n' },
+      ],
+    });
+
+    const response = await fetch(`${proxyUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: requestBody,
+    });
+
+    expect(response.status).toBe(200);
+    expect(receivedBody).toBe(requestBody);
+  });
+
+  it('normalises only JSON-optional escaping, never a string value', async () => {
+    // A body that escapes what it did not have to (\u00e9 for é, \/ for /,
+    // a surrogate pair for an emoji) comes back re-encoded, because the
+    // scrubber re-serialises the JSON it parsed. Every string VALUE is
+    // identical -- this is an encoding change, not a content change -- and it
+    // is deterministic, so the prompt cache still hits after the first turn.
+    // Claude Code never emits these forms; the test states the real boundary
+    // of the byte-for-byte guarantee rather than overclaiming it.
+    const requestBody = '{"messages":[],"s":"caf\\u00e9 a\\/b \\ud83c\\udf89"}';
+
+    const response = await fetch(`${proxyUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: requestBody,
+    });
+
+    expect(response.status).toBe(200);
+    expect(receivedBody).not.toBe(requestBody);
+    expect(JSON.parse(receivedBody).s).toBe(JSON.parse(requestBody).s);
+  });
 });

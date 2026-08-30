@@ -31,6 +31,13 @@ fixture so a change that weakens scrubbing fails the build.
   Claude's messages pass through unmodified.
 - **Non-JSON requests are byte-exact.** A multipart file upload is forwarded
   as the raw bytes that arrived — it is never decoded, scrubbed, or re-encoded.
+- **JSON requests are byte-exact outside the scrubbed content**, for the
+  compact JSON an HTTP client actually emits. Numbers keep their exact source
+  text — big integers, `-0`, `1e21`, `1.0` all survive, where a plain
+  `JSON.parse`/`stringify` would rewrite them. The one boundary: a body that
+  escapes what JSON did not require it to (`\u00e9` for `é`, `\/` for `/`) is
+  re-encoded to the literal form. Every string *value* is unchanged, and the
+  result is deterministic, so the prompt cache still hits.
 - **Your API key is never read, logged, or stored.** It passes through in the
   headers as-is, and only ever to the configured upstream: the origin is pinned
   from `RYUKPROXY_UPSTREAM_URL`, so a request arriving on the local port cannot
