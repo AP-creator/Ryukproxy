@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { stripAnsiCodes, collapseCarriageReturns, collapseConsecutiveDuplicateLines, scrubToolResultText } from '../src/scrubber.js';
 import {
   SPINNER_NOISE_FIXTURE,
@@ -201,5 +204,60 @@ describe('scrubToolResultText', () => {
     const coloredPass = '\x1b[32mPASS\x1b[0m';
     const input = `${coloredPass}\n${coloredPass}`;
     expect(scrubToolResultText(input)).toBe('PASS\nPASS');
+  });
+});
+
+describe('a real captured git clone', () => {
+  // Verbatim bytes from `git clone --progress` run under a PTY, which is what
+  // a tool_result actually captures: ESC[K + bare \r redraw frames, with CRLF
+  // line terminators from the pty's own \n translation. Neither synthetic
+  // fixture above mixes the two, and mixing them is the common real case.
+  const fixturePath = join(
+    fileURLToPath(new URL('.', import.meta.url)),
+    'fixtures',
+    'git-clone-progress.txt'
+  );
+  const captured = readFileSync(fixturePath, 'utf8');
+
+  const expected =
+    "Cloning into 'repo1'...\r\n" +
+    'remote: Enumerating objects: 1168, done.\r\n' +
+    'remote: Counting objects: 100% (93/93), done.\r\n' +
+    'remote: Compressing objects: 100% (90/90), done.\r\n' +
+    'remote: Total 1168 (delta 22), reused 4 (delta 3), pack-reused 1075 (from 3)\r\n' +
+    'Receiving objects: 100% (1168/1168), 4.44 MiB | 15.77 MiB/s, done.\r\n' +
+    'Resolving deltas: 100% (395/395), done.\r\n';
+
+  it('reduces it to exactly what the terminal finished showing', () => {
+    expect(scrubToolResultText(captured)).toBe(expected);
+  });
+
+  it('keeps every phase git reported', () => {
+    const scrubbed = scrubToolResultText(captured);
+    for (const phase of [
+      'Enumerating objects',
+      'Counting objects',
+      'Compressing objects',
+      'Total 1168',
+      'Receiving objects',
+      'Resolving deltas',
+    ]) {
+      expect(scrubbed).toContain(phase);
+    }
+    // Only the final state of each phase survives; the intermediate percentages
+    // are the noise.
+    expect(scrubbed).not.toContain('1% (');
+    expect(scrubbed).not.toContain('50%');
+  });
+
+  it('reduces the captured output by at least 95%', () => {
+    const reduction = 1 - scrubToolResultText(captured).length / captured.length;
+    expect(reduction).toBeGreaterThan(0.95);
+  });
+
+  it('preserves the pty CRLF line endings it arrived with', () => {
+    const scrubbed = scrubToolResultText(captured);
+    expect(scrubbed.split('\r\n')).toHaveLength(8);
+    expect(scrubbed).not.toMatch(/[^\r]\n/);
   });
 });

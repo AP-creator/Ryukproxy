@@ -15,10 +15,23 @@ That is pure rendering noise carrying zero information, and it is billed at
 full token cost on *every subsequent turn* that replays the conversation
 history. Ryukproxy removes it on the way out.
 
-On the captured spinner fixture in `test/fixtures/`, scrubbing takes the block
-from 1512 bytes to 114 — a 92.5% reduction. Real-world savings depend entirely
-on how much spinner output a session captures; CI enforces a 60% floor on that
-fixture so a change that weakens scrubbing fails the build.
+A real `git clone --progress` captured through a pty — the shape a
+`tool_result` actually holds — goes from 15,145 bytes to 351, a 97.7%
+reduction, and what survives is exactly what the terminal finished showing:
+
+```
+Cloning into 'repo1'...
+remote: Enumerating objects: 1168, done.
+remote: Counting objects: 100% (93/93), done.
+remote: Compressing objects: 100% (90/90), done.
+remote: Total 1168 (delta 22), reused 4 (delta 3), pack-reused 1075 (from 3)
+Receiving objects: 100% (1168/1168), 4.44 MiB | 15.77 MiB/s, done.
+Resolving deltas: 100% (395/395), done.
+```
+
+Real-world savings depend entirely on how much of a session's captured output
+looks like that. CI enforces a savings floor on each fixture in
+`test/fixtures/`, so a change that weakens scrubbing fails the build.
 
 ## Guarantees
 
