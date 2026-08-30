@@ -90,6 +90,25 @@ To make it the default, alias it in your shell profile:
 alias claude='ryukproxy'
 ```
 
+### Seeing what it saved
+
+```bash
+ryukproxy stats
+```
+
+```
+Ryukproxy: 412 requests logged (2026-07-16T09:02:11.884Z → 2026-07-16T18:44:03.101Z)
+
+  Sent by Claude Code   38.4 MB
+  Forwarded upstream    31.7 MB
+  Saved                 6.7 MB (17.4%)
+```
+
+`ryukproxy stats --json` prints the same summary as JSON for scripting.
+
+`stats` is Ryukproxy's own subcommand and is the one argument list the wrapper
+does not forward; everything else reaches `claude` untouched.
+
 You can also run the proxy on its own (without the wrapper) and point any
 client at it:
 
@@ -115,7 +134,9 @@ One JSONL line per request, sizes only — never content, never the API key:
 ```
 
 Logging is best-effort; a failure to write is reported on stderr and never
-affects a response that has already been sent.
+affects a response that has already been sent. `ryukproxy stats` reads this
+file back; a torn or corrupt line is counted and skipped rather than failing
+the whole report.
 
 ## Development
 
