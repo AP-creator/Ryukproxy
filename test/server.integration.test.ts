@@ -179,6 +179,75 @@ describe('createProxyServer', () => {
   });
 });
 
+describe('streaming passthrough', () => {
+  it('delivers streamed chunks as they arrive instead of buffering the whole response', async () => {
+    // Claude Code renders /v1/messages token by token off an SSE stream. If the
+    // proxy ever accumulated the upstream body before writing it back, every
+    // session would go silent until the response completed -- and every other
+    // test here would still pass, because the final bytes would be identical.
+    // This pins the timing: the client must see the first chunk *before* the
+    // upstream has even written the second.
+    const secondChunkDelayMs = 200;
+    let firstChunkSeenAt = 0;
+    let secondChunkWrittenAt = 0;
+
+    const streamingUpstream = createServer((req, res) => {
+      req.resume();
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+      });
+      res.write('event: message_start\ndata: {"type":"message_start"}\n\n');
+      setTimeout(() => {
+        secondChunkWrittenAt = Date.now();
+        res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+        res.end();
+      }, secondChunkDelayMs);
+    });
+    const streamingUpstreamUrl = await listen(streamingUpstream);
+    const { url, server } = await startProxyAgainst(streamingUpstreamUrl);
+    const proxyPort = Number(new URL(url).port);
+
+    try {
+      const chunks: string[] = [];
+      const contentType = await new Promise<string | undefined>((resolve, reject) => {
+        const req = httpRequest(
+          {
+            hostname: '127.0.0.1',
+            port: proxyPort,
+            path: '/v1/messages',
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+          },
+          (res) => {
+            res.on('data', (chunk) => {
+              if (chunks.length === 0) firstChunkSeenAt = Date.now();
+              chunks.push(chunk.toString());
+            });
+            res.on('end', () => resolve(res.headers['content-type']));
+            res.on('error', reject);
+          }
+        );
+        req.on('error', reject);
+        req.end(JSON.stringify({ messages: [] }));
+      });
+
+      expect(chunks.length).toBeGreaterThanOrEqual(2);
+      expect(chunks[0]).toContain('message_start');
+      expect(firstChunkSeenAt).toBeLessThan(secondChunkWrittenAt);
+      // The full stream still arrives intact, and stays labelled as SSE.
+      expect(chunks.join('')).toBe(
+        'event: message_start\ndata: {"type":"message_start"}\n\n' +
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+      );
+      expect(contentType).toBe('text/event-stream');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => streamingUpstream.close(() => resolve()));
+    }
+  });
+});
+
 describe('fail-open guarantees', () => {
   it('forwards a malformed JSON body unmodified rather than dropping it or erroring', async () => {
     const malformedBody = '{ "messages": [ this is not valid json';
