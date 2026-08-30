@@ -52,6 +52,14 @@ sub-blocks of an array — images and other sub-block types are left alone):
 Duplicates separated by other content are never touched: deciding those are
 safe to drop would require judgement about meaning.
 
+Everything else survives byte-for-byte, line endings included — CRLF text
+comes out as CRLF. What that costs is savings, not correctness: a multi-line
+progress display that redraws by moving the cursor up (cargo, webpack, docker
+pull) has its escape sequences stripped, but the superseded frames are left in
+place, because working out which rows a cursor move overwrote is exactly the
+kind of judgement a lossless pass must not make. It keeps too much rather than
+risk dropping something real.
+
 ## Install
 
 Requires Node.js 22 or newer.

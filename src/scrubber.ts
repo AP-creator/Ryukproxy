@@ -14,9 +14,19 @@ export function stripAnsiCodes(text: string): string {
 
 // Render a single line's carriage-return redraws to their final state: a bare
 // \r overwrites everything before it, so only the last segment survives.
+//
+// A *trailing* \r is the exception: it parks the cursor at column 0 but erases
+// nothing, so the terminal still shows the segment before it. Taking the empty
+// tail as the final state would drop a real line of output, so trailing empty
+// segments are discarded. Where that guess is wrong (a preceding erase-line
+// escape did blank the row) it errs toward keeping content, which is the only
+// safe direction for a lossless scrubber.
 function finalRedrawSegment(line: string): string {
   if (!line.includes('\r')) return line;
   const segments = line.split('\r');
+  while (segments.length > 1 && segments[segments.length - 1] === '') {
+    segments.pop();
+  }
   return segments[segments.length - 1];
 }
 
@@ -44,21 +54,30 @@ export function collapseConsecutiveDuplicateLines(text: string): string {
 }
 
 export function scrubToolResultText(text: string): string {
-  // Normalize real CRLF line breaks so a bare \r is unambiguously a redraw
-  // marker, then process line by line. Collapsing consecutive duplicate lines
-  // is only lossless when the duplication is genuine terminal-redraw noise: a
-  // line that carried an ANSI escape or a bare \r before stripping. Two real,
-  // independently-emitted identical lines (e.g. two PASS results, or a linter
-  // repeating a message for two locations) must be preserved untouched — even
-  // though stripping ANSI first can make two originally-distinct lines render
-  // identically.
-  const rawLines = text.replace(/\r\n/g, '\n').split('\n');
+  // Split on \n and remember which lines were CRLF-terminated, so the original
+  // bytes can be put back. Only a \r immediately before a \n is a line
+  // terminator; any other \r is a redraw marker. Rewriting \r\n to \n instead
+  // (the obvious way to disambiguate) is itself a content change: a Windows
+  // file echoed by a tool would come back with different line endings than it
+  // went in with, in text containing no noise whatsoever.
+  //
+  // Collapsing consecutive duplicate lines is only lossless when the
+  // duplication is genuine terminal-redraw noise: a line that carried an ANSI
+  // escape or a bare \r before stripping. Two real, independently-emitted
+  // identical lines (e.g. two PASS results, or a linter repeating a message for
+  // two locations) must be preserved untouched — even though stripping ANSI
+  // first can make two originally-distinct lines render identically.
+  const segments = text.split('\n');
 
-  const rendered: string[] = [];
+  const kept: Array<{ text: string; crlf: boolean }> = [];
   let prevWasRedraw = false;
   let prevRendered: string | undefined;
 
-  for (const rawLine of rawLines) {
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    const crlf = i < segments.length - 1 && segment.endsWith('\r');
+    const rawLine = crlf ? segment.slice(0, -1) : segment;
+
     const isRedraw = REDRAW_CSI.test(rawLine) || rawLine.includes('\r');
     const renderedLine = stripAnsiCodes(finalRedrawSegment(rawLine));
 
@@ -66,10 +85,10 @@ export function scrubToolResultText(text: string): string {
       isRedraw && prevWasRedraw && renderedLine !== '' && renderedLine === prevRendered;
     if (collapsible) continue;
 
-    rendered.push(renderedLine);
+    kept.push({ text: renderedLine, crlf });
     prevWasRedraw = isRedraw;
     prevRendered = renderedLine;
   }
 
-  return rendered.join('\n');
+  return kept.map((line) => (line.crlf ? `${line.text}\r` : line.text)).join('\n');
 }

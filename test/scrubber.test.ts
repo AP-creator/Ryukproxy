@@ -69,6 +69,65 @@ describe('scrubToolResultText', () => {
     expect(reduction).toBeGreaterThan(0.6);
   });
 
+  it('preserves CRLF line endings byte-for-byte', () => {
+    // A tool that cats a Windows file emits CRLF and contains no noise at all;
+    // rewriting those endings to LF would be a content change of its own, in
+    // exactly the text the scrubber promises not to touch.
+    const input = 'line one\r\nline two\r\nline three\r\n';
+    expect(scrubToolResultText(input)).toBe(input);
+  });
+
+  it('preserves a mix of CRLF and LF endings exactly as they arrived', () => {
+    const input = 'crlf\r\nlf\ncrlf again\r\n';
+    expect(scrubToolResultText(input)).toBe(input);
+  });
+
+  it('does not collapse two identical CRLF-terminated lines', () => {
+    // The CRLF is a line terminator, not a redraw, so these are two real lines.
+    const input = 'error: unused variable\r\nerror: unused variable\r\n';
+    expect(scrubToolResultText(input)).toBe(input);
+  });
+
+  it('still collapses a bare-\r redraw on a CRLF-terminated line', () => {
+    const input = 'Cloning...\rCloning..\rDone\r\nnext line\r\n';
+    expect(scrubToolResultText(input)).toBe('Done\r\nnext line\r\n');
+  });
+
+  it('keeps the last rendered text when the output ends with a bare carriage return', () => {
+    // A bare \r parks the cursor at column 0 but erases nothing, so the
+    // terminal still shows "Done". Treating the empty tail as the final state
+    // would drop a real line of output.
+    expect(scrubToolResultText('Cloning...\rDone\r')).toBe('Done');
+    expect(scrubToolResultText('progress\r\n')).toBe('progress\r\n');
+  });
+
+  it('passes noise-free content through byte-for-byte', () => {
+    // The lossless guarantee stated plainly: text with no terminal-rendering
+    // noise in it must come out exactly as it went in. Each entry is a shape
+    // that really does turn up inside a tool_result.
+    const noiseFree: Record<string, string> = {
+      typescript: 'function add(a: number, b: number) {\n  return a + b;\n}\n',
+      json: '{"id":"msg_01","n":1.0,"big":90071992547409911,"neg":-0}\n',
+      crlf: 'first\r\nsecond\r\n',
+      tabsAndTrailingSpace: 'col1\tcol2\ncode();   \n\ttabbed\n',
+      unicode: 'héllo — 世界 🎉 ✓\nκόσμε\n',
+      base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8\n',
+      unifiedDiff:
+        '--- a/x.ts\n+++ b/x.ts\n@@ -1,3 +1,3 @@\n-const a = 1;\n+const a = 2;\n const b = 3;\n',
+      blankLines: 'para one\n\n\npara two\n',
+      literalEscapeText: 'the sequence \\x1b[32m is written as text here\n',
+      boxDrawing: '┌───┬───┐\n│ a │ b │\n└───┴───┘\n',
+      repeatedIdenticalLines: 'WARN: deprecated\nWARN: deprecated\nWARN: deprecated\n',
+      windowsPath: 'C:\\Users\\me\\project\\src\n',
+      noTrailingNewline: 'last line without a newline',
+      empty: '',
+    };
+
+    for (const [name, input] of Object.entries(noiseFree)) {
+      expect(scrubToolResultText(input), `mutated the "${name}" sample`).toBe(input);
+    }
+  });
+
   it('leaves ordinary code/text content completely unchanged', () => {
     const code = 'function add(a, b) {\n  return a + b;\n}\n';
     expect(scrubToolResultText(code)).toBe(code);
