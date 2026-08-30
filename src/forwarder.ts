@@ -4,6 +4,23 @@ export const DEFAULT_UPSTREAM_URL = process.env.RYUKPROXY_UPSTREAM_URL ?? 'https
 // Anthropic API never expects one there either.
 const BODYLESS_METHODS = new Set(['GET', 'HEAD']);
 
+/**
+ * Resolve an incoming request path against the upstream base URL, keeping any
+ * base path the upstream carries.
+ *
+ * `new URL('/v1/messages', 'https://host/anthropic')` resolves against the
+ * *origin* and yields 'https://host/v1/messages' -- silently dropping the
+ * '/anthropic' prefix a gateway-style upstream needs. Joining the two paths
+ * explicitly keeps the prefix, and normalising the trailing slash off the base
+ * avoids emitting '//' at the seam.
+ */
+export function resolveUpstreamUrl(path: string, upstreamUrl: string): URL {
+  const base = new URL(upstreamUrl);
+  const prefix = base.pathname.replace(/\/+$/, '');
+  const requestPath = path.startsWith('/') ? path : `/${path}`;
+  return new URL(prefix + requestPath, base);
+}
+
 export async function forwardRequest(
   method: string,
   path: string,
@@ -11,7 +28,7 @@ export async function forwardRequest(
   body: string,
   upstreamUrl: string = DEFAULT_UPSTREAM_URL
 ): Promise<Response> {
-  const url = new URL(path, upstreamUrl);
+  const url = resolveUpstreamUrl(path, upstreamUrl);
   const forwardHeaders = { ...headers };
   delete forwardHeaders['host'];
   delete forwardHeaders['content-length'];

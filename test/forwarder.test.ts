@@ -107,4 +107,40 @@ describe('forwardRequest', () => {
     expect(response.status).toBe(200);
     expect(receivedUrl).toBe('/v1/models?limit=2&after_id=x');
   });
+
+  it('keeps a base path on the upstream URL instead of resolving it away', async () => {
+    // An upstream behind a gateway prefix (https://host/anthropic) must keep
+    // that prefix: `new URL('/v1/messages', base)` resolves against the origin
+    // and silently drops it, sending every request to the wrong path.
+    const response = await forwardRequest(
+      'POST',
+      '/v1/messages',
+      { 'content-type': 'application/json' },
+      '{}',
+      `${mockUpstreamUrl}/gateway`
+    );
+
+    expect(response.status).toBe(200);
+    expect(receivedUrl).toBe('/gateway/v1/messages');
+  });
+
+  it('does not double up slashes when the base path has a trailing slash', async () => {
+    const response = await forwardRequest(
+      'GET',
+      '/v1/models?limit=2',
+      {},
+      '',
+      `${mockUpstreamUrl}/gateway/`
+    );
+
+    expect(response.status).toBe(200);
+    expect(receivedUrl).toBe('/gateway/v1/models?limit=2');
+  });
+
+  it('leaves the path untouched when the upstream URL is a bare origin', async () => {
+    const response = await forwardRequest('POST', '/v1/messages', {}, '{}', `${mockUpstreamUrl}/`);
+
+    expect(response.status).toBe(200);
+    expect(receivedUrl).toBe('/v1/messages');
+  });
 });

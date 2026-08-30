@@ -135,8 +135,8 @@ CI runs all three on Node 22.x and 24.x for every push and pull request.
   cost is a stray process, not a broken session.
 - The proxy speaks plain HTTP, bound to `127.0.0.1` only. It is a local dev
   tool, not a shared or network-exposed service.
-- `RYUKPROXY_UPSTREAM_URL` is treated as an origin; a path prefix on it (as
-  some API gateways use) is not preserved when resolving the request path.
+- A query string on `RYUKPROXY_UPSTREAM_URL` itself is not merged into the
+  forwarded request; a base *path* prefix is preserved, a base query is not.
 
 ## Out of scope (for now)
 
