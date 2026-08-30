@@ -29,6 +29,8 @@ fixture so a change that weakens scrubbing fails the build.
   Ryukproxy can never alter what the model says.
 - **`tool_result` only.** `system`, tool definitions, your messages, and
   Claude's messages pass through unmodified.
+- **Non-JSON requests are byte-exact.** A multipart file upload is forwarded
+  as the raw bytes that arrived — it is never decoded, scrubbed, or re-encoded.
 - **Your API key is never read, logged, or stored.** It passes through in the
   headers as-is.
 - **Fails open.** A scrubber error, a malformed body, or a proxy that won't

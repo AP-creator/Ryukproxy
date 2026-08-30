@@ -25,7 +25,7 @@ export async function forwardRequest(
   method: string,
   path: string,
   headers: Record<string, string>,
-  body: string,
+  body: string | Buffer,
   upstreamUrl: string = DEFAULT_UPSTREAM_URL
 ): Promise<Response> {
   const url = resolveUpstreamUrl(path, upstreamUrl);
@@ -41,6 +41,18 @@ export async function forwardRequest(
   return fetch(url, {
     method: upstreamMethod,
     headers: forwardHeaders,
-    body: BODYLESS_METHODS.has(upstreamMethod) ? undefined : body,
+    body: BODYLESS_METHODS.has(upstreamMethod) ? undefined : toBodyInit(body),
   });
+}
+
+/**
+ * Hand fetch() something it accepts without reinterpreting the bytes.
+ *
+ * A Buffer must be narrowed to its own region of the underlying ArrayBuffer:
+ * Node allocates small Buffers out of a shared pool, so passing `.buffer`
+ * directly would send the whole pool — other requests' bytes included.
+ */
+function toBodyInit(body: string | Buffer): string | ArrayBuffer {
+  if (typeof body === 'string') return body;
+  return body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
 }

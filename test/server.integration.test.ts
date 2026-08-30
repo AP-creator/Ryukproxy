@@ -179,6 +179,48 @@ describe('createProxyServer', () => {
   });
 });
 
+describe('binary and non-JSON request bodies', () => {
+  it('forwards a binary body byte-for-byte instead of round-tripping it through UTF-8', async () => {
+    // Claude Code uploads to /v1/files as multipart/form-data with raw bytes in
+    // it. Decoding that to a UTF-8 string and re-encoding replaces every
+    // invalid sequence with U+FFFD, silently corrupting the upload -- exactly
+    // the class of damage this proxy exists to avoid.
+    let receivedBytes = Buffer.alloc(0);
+    const binaryUpstream = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk) => chunks.push(chunk));
+      req.on('end', () => {
+        receivedBytes = Buffer.concat(chunks);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+    const binaryUpstreamUrl = await listen(binaryUpstream);
+    const { url, server } = await startProxyAgainst(binaryUpstreamUrl);
+
+    try {
+      // A PNG magic number plus a lone 0xFF/0xFE pair: none of it is valid UTF-8.
+      const payload = Buffer.concat([
+        Buffer.from('--boundary\r\nContent-Type: image/png\r\n\r\n', 'utf8'),
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00, 0x80]),
+        Buffer.from('\r\n--boundary--\r\n', 'utf8'),
+      ]);
+
+      const response = await fetch(`${url}/v1/files`, {
+        method: 'POST',
+        headers: { 'content-type': 'multipart/form-data; boundary=boundary' },
+        body: payload,
+      });
+
+      expect(response.status).toBe(200);
+      expect(receivedBytes.equals(payload)).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => binaryUpstream.close(() => resolve()));
+    }
+  });
+});
+
 describe('streaming passthrough', () => {
   it('delivers streamed chunks as they arrive instead of buffering the whole response', async () => {
     // Claude Code renders /v1/messages token by token off an SSE stream. If the

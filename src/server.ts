@@ -6,13 +6,29 @@ import { forwardRequest, DEFAULT_UPSTREAM_URL } from './forwarder.js';
 import { logScrubEvent, DEFAULT_LOG_PATH } from './logger.js';
 import { HEALTH_PATH, HEALTH_SERVICE_ID } from './health.js';
 
-function readRequestBody(req: IncomingMessage): Promise<string> {
+/**
+ * Collect the request body as raw bytes.
+ *
+ * Deliberately NOT decoded to a string here: Claude Code also posts
+ * multipart/form-data with raw binary in it (file uploads), and decoding those
+ * bytes as UTF-8 replaces every invalid sequence with U+FFFD — corrupting the
+ * upload on the way through. Only the JSON path below decodes, where the bytes
+ * are valid UTF-8 by definition and the round-trip is exact.
+ */
+function readRequestBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+/** Whether this request is worth handing to the JSON scrubber at all. */
+function looksLikeJson(contentType: string | undefined): boolean {
+  // An absent content-type still gets a try — the parse itself is the real
+  // gate, and any failure falls back to the untouched original bytes.
+  return contentType === undefined || contentType === '' || contentType.includes('json');
 }
 
 export function createProxyServer(): Server {
@@ -32,10 +48,11 @@ export function createProxyServer(): Server {
       }
 
       const rawBody = await readRequestBody(req);
-      const bytesBefore = Buffer.byteLength(rawBody, 'utf8');
+      const bytesBefore = rawBody.length;
 
-      let scrubbedBody = rawBody;
-      try {
+      // Anything that isn't JSON is forwarded as the exact bytes that arrived.
+      let scrubbedBody: string | Buffer = rawBody;
+      if (looksLikeJson(req.headers['content-type'])) try {
         // Use lossless-json instead of JSON.parse/JSON.stringify: a plain
         // parse->stringify round-trip is NOT an identity transform for numbers
         // outside the safe integer range, -0, 1e21, or trailing-zero decimals
@@ -44,14 +61,15 @@ export function createProxyServer(): Server {
         // subsequent turn). lossless-json preserves the exact source text of
         // every number via LosslessNumber, so the only bytes that ever change
         // are the ones scrubToolResultText actually rewrites.
-        const parsed = losslessParse(rawBody) as AnthropicRequestBody;
+        const parsed = losslessParse(rawBody.toString('utf8')) as AnthropicRequestBody;
         scrubbedBody = losslessStringify(scrubRequestBody(parsed)) ?? rawBody;
       } catch {
-        // Not valid JSON, or not the shape we expect — forward unmodified rather than guess.
+        // Not valid JSON, or not the shape we expect — forward the original
+        // bytes rather than guess, and never a re-encoded approximation of them.
         scrubbedBody = rawBody;
       }
 
-      const bytesAfter = Buffer.byteLength(scrubbedBody, 'utf8');
+      const bytesAfter = Buffer.byteLength(scrubbedBody);
 
       const headers: Record<string, string> = {};
       for (const [key, value] of Object.entries(req.headers)) {
