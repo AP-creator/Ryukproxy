@@ -73,9 +73,12 @@ ryukproxy --print "hi"  # every argument is passed straight through
 
 The wrapper:
 
-1. Checks `~/.ryukproxy/ryukproxy.pid` and starts the proxy in the background
-   if it isn't already running, waiting (up to ~2s) for it to actually
-   accept connections.
+1. Asks `http://127.0.0.1:8931/__ryukproxy/health` whether Ryukproxy is
+   already serving. If not, it starts the proxy in the background and waits
+   (up to ~2s) for that same endpoint to answer. It checks the port rather
+   than the pidfile deliberately: a PID can be recycled onto an unrelated
+   process, and a perfectly healthy proxy whose pidfile was deleted would
+   otherwise read as "not running".
 2. Execs the real `claude` binary with
    `ANTHROPIC_BASE_URL=http://127.0.0.1:8931` set **for that invocation only**.
 3. Falls back to launching `claude` untouched if the proxy fails to start
@@ -84,11 +87,29 @@ The wrapper:
 Nothing global is mutated; `claude` invoked directly still goes straight to
 `api.anthropic.com`, and there is nothing to clean up if you stop using it.
 
+The PID is still recorded in `~/.ryukproxy/ryukproxy.pid` as bookkeeping, so
+you can stop the proxy by hand:
+
+```bash
+kill "$(cat ~/.ryukproxy/ryukproxy.pid)"
+```
+
 To make it the default, alias it in your shell profile:
 
 ```bash
 alias claude='ryukproxy'
 ```
+
+### Is it running?
+
+```bash
+curl http://127.0.0.1:8931/__ryukproxy/health
+# {"service":"ryukproxy","pid":48120}
+```
+
+The proxy answers this path itself; it is never forwarded upstream and never
+counted in `stats`. Everything the Anthropic API actually serves lives under
+`/v1/`, so the `__ryukproxy/` namespace cannot shadow a real request.
 
 ### Seeing what it saved
 
@@ -150,10 +171,10 @@ CI runs all three on Node 22.x and 24.x for every push and pull request.
 
 ## Known limitations
 
-- The pidfile check can produce a false positive if the OS recycles the
-  recorded PID for an unrelated process, and two wrappers launched at the same
-  instant can race and both spawn a proxy. Both are deliberately deferred: the
-  cost is a stray process, not a broken session.
+- Two wrappers launched at the same instant can both probe before either has
+  spawned, and both try to start a proxy. One loses the port and that session
+  runs unproxied; deliberately deferred, since the cost is a missed saving,
+  not a broken session.
 - The proxy speaks plain HTTP, bound to `127.0.0.1` only. It is a local dev
   tool, not a shared or network-exposed service.
 - A query string on `RYUKPROXY_UPSTREAM_URL` itself is not merged into the

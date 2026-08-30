@@ -1,12 +1,15 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import * as net from 'node:net';
+import { HEALTH_PATH, HEALTH_SERVICE_ID } from './health.js';
 
 const PID_FILE = join(homedir(), '.ryukproxy', 'ryukproxy.pid');
 const PORT = process.env.RYUKPROXY_PORT ?? '8931';
+
+/** Budget for the one probe taken before deciding whether to spawn anything. */
+const INITIAL_PROBE_TIMEOUT_MS = 250;
 
 function isProcessRunning(pid: number): boolean {
   try {
@@ -18,38 +21,41 @@ function isProcessRunning(pid: number): boolean {
 }
 
 /**
- * Attempts a single TCP connection to 127.0.0.1:port, resolving true/false
- * once the connection either succeeds or fails/times out.
+ * Asks 127.0.0.1:port whether *Ryukproxy* is serving there.
+ *
+ * A bare TCP connect only proves something accepts connections on the port —
+ * it could be any unrelated service, or a stale process from another tool.
+ * Requiring the health endpoint's service identity is what makes the answer
+ * mean "Ryukproxy is up", which is the only thing the caller actually cares
+ * about.
  */
-function tryConnect(port: string, timeoutMs: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host: '127.0.0.1', port: Number(port) });
-    const finish = (result: boolean) => {
-      socket.removeAllListeners();
-      socket.destroy();
-      resolve(result);
-    };
-    socket.setTimeout(timeoutMs);
-    socket.once('connect', () => finish(true));
-    socket.once('timeout', () => finish(false));
-    socket.once('error', () => finish(false));
-  });
+async function probeHealth(port: string, timeoutMs: number): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}${HEALTH_PATH}`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) return false;
+    const body = (await response.json()) as { service?: unknown };
+    return body?.service === HEALTH_SERVICE_ID;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Bounded health check for a freshly-spawned proxy process: polls
- * 127.0.0.1:port for up to ~1 second (10 attempts, 100ms apart) waiting for
- * the server to start accepting TCP connections. spawn() returns a PID
- * immediately even if the child crashes moments later (e.g. EADDRINUSE), so
- * this confirms the proxy is actually listening before callers rely on it.
+ * Bounded health check for a freshly-spawned proxy process: polls for up to
+ * ~2 seconds (10 attempts, 100ms apart) waiting for Ryukproxy to answer.
+ * spawn() returns a PID immediately even if the child crashes moments later
+ * (e.g. EADDRINUSE), so this confirms the proxy is really serving before
+ * callers rely on it.
  */
-async function waitForProxyListening(
+async function waitForProxyHealthy(
   port: string,
   attempts = 10,
   delayMs = 100
 ): Promise<boolean> {
   for (let i = 0; i < attempts; i++) {
-    if (await tryConnect(port, delayMs)) {
+    if (await probeHealth(port, delayMs)) {
       return true;
     }
     if (i < attempts - 1) {
@@ -63,17 +69,19 @@ export async function ensureProxyRunning(): Promise<boolean> {
   try {
     mkdirSync(dirname(PID_FILE), { recursive: true });
 
-    if (existsSync(PID_FILE)) {
-      const pid = Number(readFileSync(PID_FILE, 'utf8').trim());
-      // Known limitations (deliberately deferred, not overlooked):
-      // 1. PID reuse — if the OS recycles this PID for an unrelated process
-      //    between the last check and now, isProcessRunning() will report a
-      //    false positive.
-      // 2. TOCTOU race — two wrapper invocations starting at the same time
-      //    can both observe no live pidfile and both spawn a proxy.
-      if (pid && isProcessRunning(pid)) {
-        return true;
-      }
+    // Ask the port directly rather than trusting the pidfile. Reading the
+    // pidfile answered a different question — "is some process with this PID
+    // alive" — which was wrong in both directions: the OS can recycle a PID
+    // onto an unrelated process (false positive), and a healthy proxy whose
+    // pidfile was deleted read as "not running", so the launcher spawned a
+    // duplicate that died on EADDRINUSE and then failed open for no reason.
+    // The pidfile is still written below, as bookkeeping for anyone wanting to
+    // kill the proxy by hand.
+    //
+    // Still deliberately deferred: two wrappers starting at the same instant
+    // can both probe before either has spawned, and both try to spawn.
+    if (await probeHealth(PORT, INITIAL_PROBE_TIMEOUT_MS)) {
+      return true;
     }
 
     const entryPoint = join(dirname(fileURLToPath(import.meta.url)), 'index.js');
@@ -85,17 +93,17 @@ export async function ensureProxyRunning(): Promise<boolean> {
     child.unref();
     writeFileSync(PID_FILE, String(child.pid));
 
-    if (!(await waitForProxyListening(PORT))) {
+    if (!(await waitForProxyHealthy(PORT))) {
       return false;
     }
 
-    // The TCP probe only confirms *something* answers on the port -- it
-    // could be a stale orphaned process left over from an earlier run, not
-    // the child we just spawned (e.g. the new child hit EADDRINUSE against
-    // that orphan and died immediately). Confirm the specific child is
-    // still alive before declaring success; otherwise a dead child gets
-    // credited for a stale listener's success and the pidfile ends up
-    // permanently tracking a dead PID.
+    // The probe confirms *a* Ryukproxy answers on the port -- it could still
+    // be a stale orphaned one left over from an earlier run rather than the
+    // child we just spawned (e.g. the new child hit EADDRINUSE against that
+    // orphan and died immediately). Confirm the specific child is still alive
+    // before declaring success; otherwise a dead child gets credited for a
+    // stale listener's success and the pidfile ends up permanently tracking a
+    // dead PID.
     if (!child.pid || !isProcessRunning(child.pid)) {
       return false;
     }

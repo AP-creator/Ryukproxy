@@ -1,29 +1,47 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 /**
- * Builds a mock for 'node:net' whose connect() returns a fake socket that
- * immediately emits either 'connect' (proxy is listening) or 'error'
- * (connection refused, e.g. nothing is listening yet/at all).
+ * How the port answers Ryukproxy's health probe on a given attempt:
+ *  - 'healthy'  — Ryukproxy is serving there.
+ *  - 'down'     — nothing is listening (connection refused).
+ *  - 'imposter' — something answers, but it is not Ryukproxy. This is the case
+ *                 a bare TCP connect could never tell apart from 'healthy'.
  */
-function createNetMock(mode: 'connect' | 'error') {
-  return {
-    connect: vi.fn(() => {
-      const socket: Record<string, unknown> = {
-        setTimeout: vi.fn(),
-        removeAllListeners: vi.fn(),
-        destroy: vi.fn(),
-        once: vi.fn((event: string, cb: () => void) => {
-          if (mode === 'connect' && event === 'connect') {
-            queueMicrotask(cb);
-          }
-          if (mode === 'error' && event === 'error') {
-            queueMicrotask(cb);
-          }
-        }),
-      };
-      return socket;
-    }),
-  };
+type ProbeMode = 'healthy' | 'down' | 'imposter';
+
+/**
+ * Stubs global fetch for the health probe. Each entry answers one probe in
+ * order; the final entry repeats for every attempt after it, so a bounded
+ * poll can be driven to exhaustion without listing every attempt.
+ */
+function stubHealthProbe(modes: ProbeMode[]) {
+  let call = 0;
+  const fetchMock = vi.fn(async () => {
+    const mode = modes[Math.min(call++, modes.length - 1)];
+    if (mode === 'down') {
+      throw new Error('connect ECONNREFUSED 127.0.0.1:8931');
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        service: mode === 'healthy' ? 'ryukproxy' : 'some-other-service',
+        pid: 1234,
+      }),
+    } as unknown as Response;
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+/** The pidfile is bookkeeping only now; these keep fs quiet in tests. */
+function stubFs(overrides: Record<string, unknown> = {}) {
+  vi.doMock('node:fs', () => ({
+    existsSync: vi.fn(() => false),
+    readFileSync: vi.fn(() => ''),
+    writeFileSync: vi.fn(),
+    mkdirSync: vi.fn(),
+    ...overrides,
+  }));
 }
 
 describe('ensureProxyRunning', () => {
@@ -33,25 +51,22 @@ describe('ensureProxyRunning', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
-  it('spawns the proxy, writes a pidfile, and confirms it is listening', async () => {
+  it('spawns the proxy, writes a pidfile, and confirms it is healthy', async () => {
     const spawnMock = vi.fn(() => ({ pid: 4242, unref: vi.fn() }));
     const writeFileSyncMock = vi.fn();
 
-    vi.doMock('node:fs', () => ({
-      existsSync: vi.fn(() => false),
-      readFileSync: vi.fn(() => ''),
-      writeFileSync: writeFileSyncMock,
-      mkdirSync: vi.fn(),
-    }));
+    stubFs({ writeFileSync: writeFileSyncMock });
 
     vi.doMock('node:child_process', () => ({
       spawn: spawnMock,
       spawnSync: vi.fn(),
     }));
 
-    vi.doMock('node:net', () => createNetMock('connect'));
+    // Nothing is up on the first probe, so it spawns; the proxy answers after.
+    stubHealthProbe(['down', 'healthy']);
 
     // isProcessRunning(child.pid) shells out to the real process.kill(pid, 0);
     // simulate the freshly-spawned child (fake pid 4242) actually being alive.
@@ -70,24 +85,20 @@ describe('ensureProxyRunning', () => {
     expect(writeFileSyncMock).toHaveBeenCalledWith(expect.stringContaining('ryukproxy.pid'), '4242');
   });
 
-  it('does not spawn a second proxy if the pidfile points at a live process', async () => {
+  it('does not spawn a second proxy when Ryukproxy already answers on the port', async () => {
     const spawnMock = vi.fn();
 
-    vi.doMock('node:fs', () => ({
-      existsSync: vi.fn(() => true),
-      readFileSync: vi.fn(() => String(process.pid)),
-      writeFileSync: vi.fn(),
-      mkdirSync: vi.fn(),
-    }));
+    // No pidfile at all: a healthy proxy is a healthy proxy regardless of what
+    // the bookkeeping file says, so this must still short-circuit. The old
+    // pidfile-first check spawned a doomed duplicate in exactly this case.
+    stubFs();
 
     vi.doMock('node:child_process', () => ({
       spawn: spawnMock,
       spawnSync: vi.fn(),
     }));
 
-    // No health check is needed on this branch, so a connect attempt here
-    // would indicate a bug — make it fail loudly if reached.
-    vi.doMock('node:net', () => createNetMock('error'));
+    stubHealthProbe(['healthy']);
 
     const { ensureProxyRunning } = await import('../src/wrapper.js');
     const started = await ensureProxyRunning();
@@ -96,26 +107,49 @@ describe('ensureProxyRunning', () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it('respawns if the pidfile points at a dead process, confirming health after respawn', async () => {
-    const spawnMock = vi.fn(() => ({ pid: 5555, unref: vi.fn() }));
+  it('does not mistake an unrelated service on the port for Ryukproxy', async () => {
+    // The bug a bare TCP connect could never catch: something else is bound to
+    // 8931, so the port accepts connections but no scrubbing would happen. It
+    // must not be credited, and the spawn it triggers loses the port, so the
+    // launcher has to fail open rather than claim a proxy is running.
+    const spawnMock = vi.fn(() => ({ pid: 4242, unref: vi.fn() }));
 
-    vi.doMock('node:fs', () => ({
-      existsSync: vi.fn(() => true),
-      readFileSync: vi.fn(() => '999999999'),
-      writeFileSync: vi.fn(),
-      mkdirSync: vi.fn(),
-    }));
+    stubFs();
 
     vi.doMock('node:child_process', () => ({
       spawn: spawnMock,
       spawnSync: vi.fn(),
     }));
 
-    vi.doMock('node:net', () => createNetMock('connect'));
+    stubHealthProbe(['imposter']);
 
-    // The stale pidfile pid (999999999) must read as dead (real OS behavior
-    // already guarantees this), and the freshly-spawned child (fake pid
-    // 5555) must read as alive so the post-health-check liveness gate passes.
+    const { ensureProxyRunning } = await import('../src/wrapper.js');
+    const started = await ensureProxyRunning();
+
+    expect(started).toBe(false);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  }, 10000);
+
+  it('respawns when a stale pidfile names a live but unrelated process', async () => {
+    const spawnMock = vi.fn(() => ({ pid: 5555, unref: vi.fn() }));
+
+    // The pidfile names this very test process — very much alive, and very
+    // much not Ryukproxy. Under the old pidfile check this read as "already
+    // running" and the session went unproxied with no way to tell.
+    stubFs({
+      existsSync: vi.fn(() => true),
+      readFileSync: vi.fn(() => String(process.pid)),
+    });
+
+    vi.doMock('node:child_process', () => ({
+      spawn: spawnMock,
+      spawnSync: vi.fn(),
+    }));
+
+    stubHealthProbe(['down', 'healthy']);
+
+    // The freshly-spawned child (fake pid 5555) must read as alive so the
+    // post-health-check liveness gate passes.
     vi.spyOn(process, 'kill').mockImplementation((pid) => {
       if (pid === 5555) {
         return true;
@@ -135,19 +169,14 @@ describe('ensureProxyRunning', () => {
       throw new Error('spawn failed');
     });
 
-    vi.doMock('node:fs', () => ({
-      existsSync: vi.fn(() => false),
-      readFileSync: vi.fn(() => ''),
-      writeFileSync: vi.fn(),
-      mkdirSync: vi.fn(),
-    }));
+    stubFs();
 
     vi.doMock('node:child_process', () => ({
       spawn: spawnMock,
       spawnSync: vi.fn(),
     }));
 
-    vi.doMock('node:net', () => createNetMock('error'));
+    stubHealthProbe(['down']);
 
     const { ensureProxyRunning } = await import('../src/wrapper.js');
     const started = await ensureProxyRunning();
@@ -156,28 +185,22 @@ describe('ensureProxyRunning', () => {
   });
 
   it('returns false if the health check passes but the just-spawned child is not actually alive', async () => {
-    // Simulates a stale orphaned proxy still holding the port: the TCP probe
-    // succeeds (mode: 'connect'), but the child spawn() just returned is not
-    // a real running process (pid chosen to be practically guaranteed not to
-    // exist, same technique as the "dead pidfile" test above). This must not
-    // be credited as success -- the port answering doesn't prove *our* child
-    // is the one that's alive and serving.
+    // Simulates a stale orphaned proxy still holding the port: the health
+    // probe succeeds, but the child spawn() just returned is not a real
+    // running process (pid chosen to be practically guaranteed not to exist).
+    // This must not be credited as success -- a healthy answer doesn't prove
+    // *our* child is the one that's alive and serving.
     const spawnMock = vi.fn(() => ({ pid: 999999998, unref: vi.fn() }));
     const writeFileSyncMock = vi.fn();
 
-    vi.doMock('node:fs', () => ({
-      existsSync: vi.fn(() => false),
-      readFileSync: vi.fn(() => ''),
-      writeFileSync: writeFileSyncMock,
-      mkdirSync: vi.fn(),
-    }));
+    stubFs({ writeFileSync: writeFileSyncMock });
 
     vi.doMock('node:child_process', () => ({
       spawn: spawnMock,
       spawnSync: vi.fn(),
     }));
 
-    vi.doMock('node:net', () => createNetMock('connect'));
+    stubHealthProbe(['down', 'healthy']);
 
     const { ensureProxyRunning } = await import('../src/wrapper.js');
     const started = await ensureProxyRunning();
@@ -186,25 +209,20 @@ describe('ensureProxyRunning', () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
-  it('returns false (fail open) if the spawned proxy never starts listening', async () => {
+  it('returns false (fail open) if the spawned proxy never starts serving', async () => {
     const spawnMock = vi.fn(() => ({ pid: 4242, unref: vi.fn() }));
 
-    vi.doMock('node:fs', () => ({
-      existsSync: vi.fn(() => false),
-      readFileSync: vi.fn(() => ''),
-      writeFileSync: vi.fn(),
-      mkdirSync: vi.fn(),
-    }));
+    stubFs();
 
     vi.doMock('node:child_process', () => ({
       spawn: spawnMock,
       spawnSync: vi.fn(),
     }));
 
-    // Every connection attempt fails, e.g. the child crashed immediately
-    // (EADDRINUSE) — the health check should exhaust its budget and report
-    // failure rather than returning true just because spawn() didn't throw.
-    vi.doMock('node:net', () => createNetMock('error'));
+    // Every probe fails, e.g. the child crashed immediately (EADDRINUSE) — the
+    // health check should exhaust its budget and report failure rather than
+    // returning true just because spawn() didn't throw.
+    stubHealthProbe(['down']);
 
     const { ensureProxyRunning } = await import('../src/wrapper.js');
     const started = await ensureProxyRunning();
@@ -226,6 +244,7 @@ describe('runClaudeWithProxy', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     if (originalBaseUrl === undefined) {
       delete process.env.ANTHROPIC_BASE_URL;
     } else {
@@ -237,19 +256,14 @@ describe('runClaudeWithProxy', () => {
     const spawnSyncMock = vi.fn(() => ({ status: 0, error: undefined, signal: null }));
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
 
-    vi.doMock('node:fs', () => ({
-      existsSync: vi.fn(() => false),
-      readFileSync: vi.fn(() => ''),
-      writeFileSync: vi.fn(),
-      mkdirSync: vi.fn(),
-    }));
+    stubFs();
 
     vi.doMock('node:child_process', () => ({
       spawn: vi.fn(() => ({ pid: 4242, unref: vi.fn() })),
       spawnSync: spawnSyncMock,
     }));
 
-    vi.doMock('node:net', () => createNetMock('connect'));
+    stubHealthProbe(['down', 'healthy']);
 
     // isProcessRunning(child.pid) shells out to the real process.kill(pid, 0);
     // simulate the freshly-spawned child (fake pid 4242) actually being alive.
@@ -273,21 +287,18 @@ describe('runClaudeWithProxy', () => {
     const spawnSyncMock = vi.fn(() => ({ status: 0, error: undefined, signal: null }));
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
 
-    vi.doMock('node:fs', () => ({
-      existsSync: vi.fn(() => false),
-      readFileSync: vi.fn(() => ''),
+    stubFs({
       writeFileSync: vi.fn(() => {
         throw new Error('disk full');
       }),
-      mkdirSync: vi.fn(),
-    }));
+    });
 
     vi.doMock('node:child_process', () => ({
       spawn: vi.fn(() => ({ pid: 4242, unref: vi.fn() })),
       spawnSync: spawnSyncMock,
     }));
 
-    vi.doMock('node:net', () => createNetMock('error'));
+    stubHealthProbe(['down']);
 
     const { runClaudeWithProxy } = await import('../src/wrapper.js');
     await runClaudeWithProxy(['--version']);
@@ -302,19 +313,15 @@ describe('runClaudeWithProxy', () => {
     const spawnSyncMock = vi.fn(() => ({ status: 0, error: undefined, signal: null }));
     vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
 
-    vi.doMock('node:fs', () => ({
-      existsSync: vi.fn(() => true),
-      readFileSync: vi.fn(() => String(process.pid)),
-      writeFileSync: vi.fn(),
-      mkdirSync: vi.fn(),
-    }));
+    stubFs();
 
     vi.doMock('node:child_process', () => ({
       spawn: vi.fn(),
       spawnSync: spawnSyncMock,
     }));
 
-    vi.doMock('node:net', () => createNetMock('error'));
+    // Already healthy, so the launcher short-circuits without spawning.
+    stubHealthProbe(['healthy']);
 
     const { runClaudeWithProxy } = await import('../src/wrapper.js');
     await runClaudeWithProxy(['--version']);
@@ -332,19 +339,15 @@ describe('runClaudeWithProxy', () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    vi.doMock('node:fs', () => ({
-      existsSync: vi.fn(() => true),
-      readFileSync: vi.fn(() => String(process.pid)),
-      writeFileSync: vi.fn(),
-      mkdirSync: vi.fn(),
-    }));
+    stubFs();
 
     vi.doMock('node:child_process', () => ({
       spawn: vi.fn(),
       spawnSync: spawnSyncMock,
     }));
 
-    vi.doMock('node:net', () => createNetMock('error'));
+    // Already healthy, so the launcher short-circuits without spawning.
+    stubHealthProbe(['healthy']);
 
     const { runClaudeWithProxy } = await import('../src/wrapper.js');
     await runClaudeWithProxy(['--version']);
