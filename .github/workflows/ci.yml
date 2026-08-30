@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the oldest LTS with the native fetch/ESM support the proxy
+        # relies on; 24 is what the design targets.
+        node-version: ['22.x', '24.x']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        # Includes the savings-regression test against the captured spinner
+        # fixture, so a change that weakens scrubbing fails here rather than
+        # going unnoticed.
+        run: npm test
+
+      - name: Build
+        run: npm run build
