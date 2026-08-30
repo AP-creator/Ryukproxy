@@ -32,6 +32,8 @@ let mockUpstreamUrl: string;
 let proxyServer: ReturnType<typeof createProxyServer>;
 let proxyUrl: string;
 let receivedBody = '';
+let receivedMethod = '';
+let receivedUrl = '';
 let tempDir: string;
 let logPath: string;
 
@@ -41,6 +43,8 @@ beforeAll(async () => {
     req.on('data', (chunk) => (data += chunk));
     req.on('end', () => {
       receivedBody = data;
+      receivedMethod = req.method ?? '';
+      receivedUrl = req.url ?? '';
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ id: 'msg_test', content: [{ type: 'text', text: 'hi' }] }));
     });
@@ -115,6 +119,31 @@ describe('createProxyServer', () => {
     const lastLine = logContents.trim().split('\n').pop()!;
     const parsed = JSON.parse(lastLine);
     expect(Object.keys(parsed).sort()).toEqual(['bytesAfter', 'bytesBefore', 'timestamp']);
+  });
+
+  it('passes non-POST API traffic through with its method, path, and query intact', async () => {
+    const response = await fetch(`${proxyUrl}/v1/models?limit=2`, {
+      method: 'GET',
+      headers: { 'x-api-key': 'test-key' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(receivedMethod).toBe('GET');
+    expect(receivedUrl).toBe('/v1/models?limit=2');
+  });
+
+  it('forwards a POST to a non-messages endpoint without disturbing its body', async () => {
+    const body = JSON.stringify({ model: 'claude-x', messages: [] });
+    const response = await fetch(`${proxyUrl}/v1/messages/count_tokens`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+
+    expect(response.status).toBe(200);
+    expect(receivedMethod).toBe('POST');
+    expect(receivedUrl).toBe('/v1/messages/count_tokens');
+    expect(receivedBody).toBe(body);
   });
 });
 

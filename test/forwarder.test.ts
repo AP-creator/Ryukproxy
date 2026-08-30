@@ -5,6 +5,8 @@ import { forwardRequest } from '../src/forwarder.js';
 let mockUpstream: Server;
 let mockUpstreamUrl: string;
 let receivedBody = '';
+let receivedMethod = '';
+let receivedUrl = '';
 let receivedHeaders: Record<string, string | string[] | undefined> = {};
 
 beforeAll(async () => {
@@ -13,6 +15,8 @@ beforeAll(async () => {
     req.on('data', (chunk) => (data += chunk));
     req.on('end', () => {
       receivedBody = data;
+      receivedMethod = req.method ?? '';
+      receivedUrl = req.url ?? '';
       receivedHeaders = req.headers;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
@@ -32,6 +36,7 @@ afterAll(() => {
 describe('forwardRequest', () => {
   it('sends the given body and headers to the upstream URL', async () => {
     const response = await forwardRequest(
+      'POST',
       '/v1/messages',
       { 'content-type': 'application/json', 'x-api-key': 'test-key' },
       '{"scrubbed":true}',
@@ -44,7 +49,7 @@ describe('forwardRequest', () => {
   });
 
   it('returns the upstream response unmodified for the caller to stream back', async () => {
-    const response = await forwardRequest('/v1/messages', {}, '{}', mockUpstreamUrl);
+    const response = await forwardRequest('POST', '/v1/messages', {}, '{}', mockUpstreamUrl);
     const json = await response.json();
     expect(json).toEqual({ ok: true });
   });
@@ -52,6 +57,7 @@ describe('forwardRequest', () => {
   it('strips host, content-length, and transfer-encoding headers before forwarding', async () => {
     const testBody = '{"scrubbed":true}';
     const response = await forwardRequest(
+      'POST',
       '/v1/messages',
       {
         'content-type': 'application/json',
@@ -75,5 +81,30 @@ describe('forwardRequest', () => {
     // Verify other headers still came through
     expect(receivedHeaders['x-api-key']).toBe('test-key');
     expect(receivedHeaders['content-type']).toBe('application/json');
+  });
+
+  it('forwards the caller-supplied method rather than rewriting everything to POST', async () => {
+    const response = await forwardRequest('GET', '/v1/models', { 'x-api-key': 'test-key' }, '', mockUpstreamUrl);
+
+    expect(response.status).toBe(200);
+    expect(receivedMethod).toBe('GET');
+    expect(receivedUrl).toBe('/v1/models');
+  });
+
+  it('omits the body on methods that cannot carry one', async () => {
+    // fetch() throws TypeError if a GET/HEAD request is given a body, so a
+    // bodyless method must reach fetch with body: undefined, not ''.
+    const response = await forwardRequest('GET', '/v1/models', {}, '', mockUpstreamUrl);
+
+    expect(response.status).toBe(200);
+    expect(receivedBody).toBe('');
+    expect(receivedHeaders['content-type']).toBeUndefined();
+  });
+
+  it('preserves the query string when resolving the upstream URL', async () => {
+    const response = await forwardRequest('GET', '/v1/models?limit=2&after_id=x', {}, '', mockUpstreamUrl);
+
+    expect(response.status).toBe(200);
+    expect(receivedUrl).toBe('/v1/models?limit=2&after_id=x');
   });
 });

@@ -48,7 +48,13 @@ export function createProxyServer(): Server {
       }
       headers['content-length'] = String(bytesAfter);
 
-      const upstreamResponse = await forwardRequest(req.url ?? '/', headers, scrubbedBody, upstreamUrl);
+      const upstreamResponse = await forwardRequest(
+        req.method ?? 'POST',
+        req.url ?? '/',
+        headers,
+        scrubbedBody,
+        upstreamUrl
+      );
 
       const responseHeaders: Record<string, string> = {};
       upstreamResponse.headers.forEach((value, key) => {
