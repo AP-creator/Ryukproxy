@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { stripAnsiCodes, collapseCarriageReturns, collapseConsecutiveDuplicateLines, scrubToolResultText } from '../src/scrubber.js';
-import { SPINNER_NOISE_FIXTURE, SPINNER_NOISE_EXPECTED } from './fixtures/spinner-noise.js';
+import {
+  SPINNER_NOISE_FIXTURE,
+  SPINNER_NOISE_EXPECTED,
+  PROGRESS_BAR_NOISE_FIXTURE,
+  PROGRESS_BAR_NOISE_EXPECTED,
+} from './fixtures/spinner-noise.js';
 
 describe('stripAnsiCodes', () => {
   it('removes CSI escape sequences', () => {
@@ -99,6 +104,43 @@ describe('scrubToolResultText', () => {
     // would drop a real line of output.
     expect(scrubToolResultText('Cloning...\rDone\r')).toBe('Done');
     expect(scrubToolResultText('progress\r\n')).toBe('progress\r\n');
+  });
+
+  it('reduces an erase-line progress bar to its final rendered state', () => {
+    expect(scrubToolResultText(PROGRESS_BAR_NOISE_FIXTURE)).toBe(PROGRESS_BAR_NOISE_EXPECTED);
+  });
+
+  it('reduces the progress-bar fixture size by at least 60%', () => {
+    const scrubbed = scrubToolResultText(PROGRESS_BAR_NOISE_FIXTURE);
+    const reduction = 1 - scrubbed.length / PROGRESS_BAR_NOISE_FIXTURE.length;
+    expect(reduction).toBeGreaterThan(0.6);
+  });
+
+  it('leaves the superseded frames of a multi-line cursor-up redraw in place', () => {
+    // Deliberate scope limit, pinned so nobody "optimises" it into a lossy
+    // transform: working out which rows a cursor move overwrote is judgement,
+    // and this pass does not make judgement calls. The escapes go, the frames
+    // stay.
+    const input =
+      'Compiling a v0.1.0\nCompiling b v0.2.0\n' +
+      '\x1b[2A\x1b[2K Compiling a v0.1.0\n\x1b[2K Compiling b v0.2.0\nFinished\n';
+
+    expect(scrubToolResultText(input)).toBe(
+      'Compiling a v0.1.0\nCompiling b v0.2.0\n' +
+        ' Compiling a v0.1.0\n Compiling b v0.2.0\nFinished\n'
+    );
+  });
+
+  it('is deterministic and idempotent', () => {
+    // Claude Code replays the whole conversation every turn, and the prompt
+    // cache only hits if the bytes are identical each time. A scrubber whose
+    // output varied between runs would invalidate the cache on every turn and
+    // cost far more than the noise it removed.
+    for (const sample of [SPINNER_NOISE_FIXTURE, PROGRESS_BAR_NOISE_FIXTURE]) {
+      const once = scrubToolResultText(sample);
+      expect(scrubToolResultText(sample)).toBe(once);
+      expect(scrubToolResultText(once)).toBe(once);
+    }
   });
 
   it('passes noise-free content through byte-for-byte', () => {

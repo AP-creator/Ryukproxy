@@ -24,3 +24,18 @@ export const SPINNER_NOISE_EXPECTED =
   '◇  Repository cloned\n' +
   '│\n' +
   '◇  Found 4 skills\n';
+
+// A second, structurally different noise shape: a single-line progress bar
+// redrawn with erase-line + carriage return (npm/pip/curl style), rather than
+// the braille spinner above. It exercises the erase-line path, which the
+// spinner fixture does not, so a regression there can't hide behind the
+// spinner's savings figure.
+const progressFrames = [0, 20, 40, 60, 80, 100].map(
+  (pct) => `${ESC}[2K\r[${'#'.repeat(pct / 10).padEnd(10, ' ')}] ${pct}%`
+);
+
+export const PROGRESS_BAR_NOISE_FIXTURE =
+  progressFrames.join('') + '\n' + 'Downloaded 42 packages in 6.1s\n';
+
+export const PROGRESS_BAR_NOISE_EXPECTED =
+  '[##########] 100%\n' + 'Downloaded 42 packages in 6.1s\n';
