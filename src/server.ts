@@ -130,10 +130,21 @@ export function createProxyServer(): Server {
         upstreamUrl
       );
 
-      const responseHeaders: Record<string, string> = {};
+      const responseHeaders: Record<string, string | string[]> = {};
       upstreamResponse.headers.forEach((value, key) => {
         responseHeaders[key] = value;
       });
+      // forEach visits each set-cookie separately and the assignment above
+      // keeps only the last, silently dropping the rest -- a session cookie
+      // destroyed in transit. Every other header is safe to join per RFC 7230;
+      // set-cookie is the one that isn't, so it comes from getSetCookie() as an
+      // array, which Node writes back out as separate headers.
+      const setCookies = upstreamResponse.headers.getSetCookie?.() ?? [];
+      if (setCookies.length > 0) {
+        responseHeaders['set-cookie'] = setCookies;
+      } else {
+        delete responseHeaders['set-cookie'];
+      }
       // undici transparently decompresses gzip/br upstream bodies, so the
       // upstream's content-encoding and (compressed) content-length no longer
       // describe the bytes we actually send. Drop those plus hop-by-hop framing

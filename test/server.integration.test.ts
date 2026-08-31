@@ -285,6 +285,51 @@ describe('upstream origin pinning', () => {
   });
 });
 
+describe('response header fidelity', () => {
+  it('keeps multiple Set-Cookie headers separate', async () => {
+    // Iterating a fetch Headers object joins repeated values with ', ', which
+    // is fine for most headers and wrong for set-cookie: two cookies become
+    // one malformed one. api.anthropic.com sets none, but a gateway upstream
+    // is explicitly supported now, and those do.
+    const cookieUpstream = createServer((req, res) => {
+      req.resume();
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'set-cookie': ['session=abc; Path=/; HttpOnly', 'tracking=xyz; Path=/'],
+      });
+      res.end('{"ok":true}');
+    });
+    const cookieUpstreamUrl = await listen(cookieUpstream);
+    const { url, server } = await startProxyAgainst(cookieUpstreamUrl);
+
+    try {
+      const cookies = await new Promise<string[] | undefined>((resolve, reject) => {
+        const request = httpRequest(
+          {
+            hostname: '127.0.0.1',
+            port: Number(new URL(url).port),
+            path: '/v1/messages',
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+          },
+          (response) => {
+            response.resume();
+            response.on('end', () => resolve(response.headers['set-cookie']));
+            response.on('error', reject);
+          }
+        );
+        request.on('error', reject);
+        request.end('{"messages":[]}');
+      });
+
+      expect(cookies).toEqual(['session=abc; Path=/; HttpOnly', 'tracking=xyz; Path=/']);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => cookieUpstream.close(() => resolve()));
+    }
+  });
+});
+
 describe('backpressure', () => {
   it('delivers a large response intact to a slow reader', async () => {
     // Big enough to overflow the socket buffer several times, so res.write()
