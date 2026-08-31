@@ -121,11 +121,15 @@ export function createProxyServer(): Server {
 
       const bytesAfter = Buffer.byteLength(scrubbedBody);
 
+      // Node gives a string for every header it keeps; the only array-valued
+      // one is set-cookie, which has no meaning on a request.
       const headers: Record<string, string> = {};
       for (const [key, value] of Object.entries(req.headers)) {
         if (typeof value === 'string') headers[key] = value;
       }
-      headers['content-length'] = String(bytesAfter);
+      // Note: content-length is deliberately NOT set here. The scrub usually
+      // changes the body's length, and forwardRequest drops the header anyway
+      // so fetch can size the request it actually sends.
 
       const upstreamResponse = await forwardRequest(
         req.method ?? 'POST',
@@ -160,15 +164,14 @@ export function createProxyServer(): Server {
       } else {
         delete responseHeaders['set-cookie'];
       }
-      // undici transparently decompresses gzip/br upstream bodies, so the
-      // upstream's content-encoding and (compressed) content-length no longer
-      // describe the bytes we actually send. Drop those plus hop-by-hop framing
-      // headers and let Node reframe the response from the real decompressed
-      // bytes; otherwise a compressed upstream response reaches the client as a
-      // gzip-labelled but already-decompressed body (decode failure/truncation).
-      // These two are a separate concern from the hop-by-hop scrub above: they
-      // are dropped because the bytes no longer match what they describe, not
-      // because they belong to another hop.
+      // A separate concern from the hop-by-hop scrub above: these two are
+      // dropped because the bytes no longer match what they describe, not
+      // because they belong to another hop. undici transparently decompresses
+      // gzip/br upstream bodies, so the upstream's content-encoding and its
+      // compressed content-length both describe something other than what we
+      // are about to send. Dropping them lets Node reframe the response from
+      // the real decompressed bytes; keeping them delivers a gzip-labelled body
+      // that is already decompressed, which the client fails to decode.
       delete responseHeaders['content-encoding'];
       delete responseHeaders['content-length'];
       res.writeHead(upstreamResponse.status, responseHeaders);
