@@ -5,6 +5,52 @@ export const DEFAULT_UPSTREAM_URL = process.env.RYUKPROXY_UPSTREAM_URL ?? 'https
 const BODYLESS_METHODS = new Set(['GET', 'HEAD']);
 
 /**
+ * Headers that describe the client's connection to *us*, not the request
+ * itself (RFC 7230 section 6.1), plus the two the transport must recompute.
+ *
+ * Beyond being wrong to relay, some of these are actively fatal: fetch()
+ * throws outright on `keep-alive` and `upgrade`, so a client sending either
+ * turned into a 502 and the request never reached the API at all -- a
+ * fail-closed path in a proxy whose whole design is to fail open.
+ */
+const HOP_BY_HOP_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-connection',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  // Recomputed by fetch for the request it actually sends.
+  'host',
+  'content-length',
+]);
+
+/**
+ * Drop the connection-scoped headers, keeping everything the API cares about
+ * (x-api-key, anthropic-version, anthropic-beta, content-type, ...) untouched.
+ *
+ * `Connection` may also *name* further headers that are connection-scoped for
+ * this hop, so those are dropped too.
+ */
+function forwardableHeaders(headers: Record<string, string>): Record<string, string> {
+  const connectionScoped = new Set(
+    (headers['connection'] ?? '')
+      .split(',')
+      .map((token) => token.trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  const forwardable: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    const key = name.toLowerCase();
+    if (HOP_BY_HOP_HEADERS.has(key) || connectionScoped.has(key)) continue;
+    forwardable[name] = value;
+  }
+  return forwardable;
+}
+
+/**
  * Resolve an incoming request path against the upstream base URL, keeping any
  * base path the upstream carries and never leaving the upstream's origin.
  *
@@ -45,10 +91,7 @@ export async function forwardRequest(
   upstreamUrl: string = DEFAULT_UPSTREAM_URL
 ): Promise<Response> {
   const url = resolveUpstreamUrl(path, upstreamUrl);
-  const forwardHeaders = { ...headers };
-  delete forwardHeaders['host'];
-  delete forwardHeaders['content-length'];
-  delete forwardHeaders['transfer-encoding'];
+  const forwardHeaders = forwardableHeaders(headers);
   // Forward the caller's own method verbatim. Hardcoding POST here turned
   // every non-POST call Claude Code makes through the proxy (e.g.
   // `GET /v1/models`) into a POST against the same path, which the API

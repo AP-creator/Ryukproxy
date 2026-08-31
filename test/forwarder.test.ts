@@ -54,6 +54,51 @@ describe('forwardRequest', () => {
     expect(json).toEqual({ ok: true });
   });
 
+  it('forwards a request carrying headers fetch() refuses, rather than failing it', async () => {
+    // fetch() throws on keep-alive and upgrade. Relaying them turned a
+    // perfectly ordinary request into a 502 that never reached the API -- the
+    // one thing a fail-open proxy must not do.
+    const response = await forwardRequest(
+      'POST',
+      '/v1/messages',
+      {
+        'content-type': 'application/json',
+        'x-api-key': 'test-key',
+        'keep-alive': 'timeout=5',
+        'upgrade': 'websocket',
+        'te': 'trailers',
+        'proxy-connection': 'keep-alive',
+      },
+      '{}',
+      mockUpstreamUrl
+    );
+
+    expect(response.status).toBe(200);
+    expect(receivedHeaders['x-api-key']).toBe('test-key');
+    for (const dropped of ['keep-alive', 'upgrade', 'te', 'proxy-connection']) {
+      expect(receivedHeaders[dropped], `forwarded ${dropped}`).toBeUndefined();
+    }
+  });
+
+  it('drops headers the Connection header names as connection-scoped', async () => {
+    const response = await forwardRequest(
+      'POST',
+      '/v1/messages',
+      {
+        'content-type': 'application/json',
+        'connection': 'close, x-custom-hop',
+        'x-custom-hop': 'should-not-travel',
+        'x-real-header': 'should-travel',
+      },
+      '{}',
+      mockUpstreamUrl
+    );
+
+    expect(response.status).toBe(200);
+    expect(receivedHeaders['x-custom-hop']).toBeUndefined();
+    expect(receivedHeaders['x-real-header']).toBe('should-travel');
+  });
+
   it('strips host, content-length, and transfer-encoding headers before forwarding', async () => {
     const testBody = '{"scrubbed":true}';
     const response = await forwardRequest(
