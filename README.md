@@ -179,8 +179,14 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8931 claude
 | Variable                 | Default                      | Purpose                                     |
 | ------------------------ | ---------------------------- | ------------------------------------------- |
 | `RYUKPROXY_PORT`         | `8931`                       | Port the proxy listens on (127.0.0.1 only). |
-| `RYUKPROXY_UPSTREAM_URL` | `https://api.anthropic.com`  | Upstream API base URL.                      |
+| `RYUKPROXY_UPSTREAM_URL` | your `ANTHROPIC_BASE_URL`, else `https://api.anthropic.com` | Upstream API base URL. |
 | `RYUKPROXY_LOG_PATH`     | `~/.ryukproxy/events.jsonl`  | Where byte-count events are appended.       |
+
+**Already using a gateway?** If `ANTHROPIC_BASE_URL` is set when you launch,
+the proxy forwards there rather than to `api.anthropic.com` — inserting
+Ryukproxy doesn't move your traffic off the endpoint you chose. The one value
+it won't adopt is one pointing at its own port, which would have it forward to
+itself forever. `RYUKPROXY_UPSTREAM_URL` overrides both.
 
 ## Logging
 

@@ -15,6 +15,41 @@ const INITIAL_PROBE_TIMEOUT_MS = 250;
 /** Signals that mean "the user ended it", which need no error message. */
 const QUIET_SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGPIPE']);
 
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+/**
+ * Work out what the proxy should forward to.
+ *
+ * The launcher overwrites ANTHROPIC_BASE_URL so Claude Code talks to the proxy
+ * instead of the API. If the user already had one set -- pointing at a company
+ * gateway, say -- and the proxy then defaulted to api.anthropic.com, inserting
+ * the proxy would silently redirect their traffic away from the endpoint they
+ * chose. So their value becomes the proxy's upstream.
+ *
+ * Except when it points back at the proxy's own port, which happens the moment
+ * someone exports ANTHROPIC_BASE_URL=http://127.0.0.1:8931 to make the setting
+ * stick: adopting that would have the proxy forward to itself, forever.
+ */
+export function resolveUpstreamForProxy(
+  env: NodeJS.ProcessEnv,
+  port: string
+): string | undefined {
+  // An explicit setting always wins; it is the more specific instruction.
+  if (env.RYUKPROXY_UPSTREAM_URL) return env.RYUKPROXY_UPSTREAM_URL;
+
+  const existing = env.ANTHROPIC_BASE_URL;
+  if (!existing) return undefined;
+
+  try {
+    const url = new URL(existing);
+    const isSelf = LOOPBACK_HOSTS.has(url.hostname) && url.port === port;
+    return isSelf ? undefined : existing;
+  } catch {
+    // Not a URL we can reason about — leave the proxy on its default.
+    return undefined;
+  }
+}
+
 function isProcessRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -89,10 +124,15 @@ export async function ensureProxyRunning(): Promise<boolean> {
     }
 
     const entryPoint = join(dirname(fileURLToPath(import.meta.url)), 'index.js');
+    const upstream = resolveUpstreamForProxy(process.env, PORT);
     const child = spawn(process.execPath, [entryPoint], {
       detached: true,
       stdio: 'ignore',
-      env: { ...process.env, RYUKPROXY_PORT: PORT },
+      env: {
+        ...process.env,
+        RYUKPROXY_PORT: PORT,
+        ...(upstream ? { RYUKPROXY_UPSTREAM_URL: upstream } : {}),
+      },
     });
     child.unref();
     writeFileSync(PID_FILE, String(child.pid));
