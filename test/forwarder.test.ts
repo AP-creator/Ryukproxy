@@ -99,6 +99,25 @@ describe('forwardRequest', () => {
     expect(receivedHeaders['x-real-header']).toBe('should-travel');
   });
 
+  it('honours a capitalised Connection header the same as a lowercase one', async () => {
+    const response = await forwardRequest(
+      'POST',
+      '/v1/messages',
+      {
+        'content-type': 'application/json',
+        'Connection': 'close, X-Custom-Hop',
+        'X-Custom-Hop': 'should-not-travel',
+        'X-Real-Header': 'should-travel',
+      },
+      '{}',
+      mockUpstreamUrl
+    );
+
+    expect(response.status).toBe(200);
+    expect(receivedHeaders['x-custom-hop']).toBeUndefined();
+    expect(receivedHeaders['x-real-header']).toBe('should-travel');
+  });
+
   it('strips host, content-length, and transfer-encoding headers before forwarding', async () => {
     const testBody = '{"scrubbed":true}';
     const response = await forwardRequest(

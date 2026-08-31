@@ -5,12 +5,13 @@ export const DEFAULT_UPSTREAM_URL = process.env.RYUKPROXY_UPSTREAM_URL ?? 'https
 const BODYLESS_METHODS = new Set(['GET', 'HEAD']);
 
 /**
- * Headers that describe the client's connection to *us*, not the request
- * itself (RFC 7230 section 6.1), plus the two the transport must recompute.
+ * Headers that describe one hop of a connection rather than the message itself
+ * (RFC 7230 section 6.1), and so must not be relayed to the next hop in either
+ * direction.
  *
- * Beyond being wrong to relay, some of these are actively fatal: fetch()
- * throws outright on `keep-alive` and `upgrade`, so a client sending either
- * turned into a 502 and the request never reached the API at all -- a
+ * Beyond being wrong to relay, some are actively fatal on the request side:
+ * fetch() throws outright on `keep-alive` and `upgrade`, so a client sending
+ * either turned into a 502 and the request never reached the API at all -- a
  * fail-closed path in a proxy whose whole design is to fail open.
  */
 export const HOP_BY_HOP_HEADERS = new Set([
@@ -39,6 +40,12 @@ export function connectionScopedNames(connectionValue: string | undefined): Set<
   );
 }
 
+/** Look a header up without assuming the caller lowercased its keys. */
+function headerValue(headers: Record<string, string>, name: string): string | undefined {
+  const match = Object.keys(headers).find((key) => key.toLowerCase() === name);
+  return match === undefined ? undefined : headers[match];
+}
+
 /**
  * Drop the connection-scoped headers, keeping everything the API cares about
  * (x-api-key, anthropic-version, anthropic-beta, content-type, ...) untouched.
@@ -47,7 +54,10 @@ export function connectionScopedNames(connectionValue: string | undefined): Set<
  * this hop, so those are dropped too.
  */
 function forwardableHeaders(headers: Record<string, string>): Record<string, string> {
-  const connectionScoped = connectionScopedNames(headers['connection']);
+  // Node lowercases incoming header names, but forwardRequest is a plain
+  // function anyone can call — don't let a capitalised `Connection` slip its
+  // named headers through.
+  const connectionScoped = connectionScopedNames(headerValue(headers, 'connection'));
 
   const forwardable: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
