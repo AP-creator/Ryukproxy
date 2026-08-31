@@ -1,7 +1,15 @@
 # Ryukproxy — Design
 
 **Date:** 2026-07-16
-**Status:** Approved for planning
+**Status:** Approved for planning — implemented, and since extended
+
+> This is the original design record, kept as written. The shipped tool has
+> grown past it: a `/__ryukproxy/health` endpoint the launcher uses to identify
+> the proxy (rather than trusting a pidfile), a `ryukproxy stats` subcommand
+> that reads the event log back, an upstream origin pinned against redirection,
+> and support for an upstream the user had already configured. **The README is
+> the current source of truth for behaviour;** read this for the reasoning
+> behind the design, not for what the code does today.
 
 ## Problem
 
