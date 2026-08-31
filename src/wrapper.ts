@@ -3,6 +3,7 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { constants } from 'node:os';
 import { HEALTH_PATH, HEALTH_SERVICE_ID } from './health.js';
 
 const PID_FILE = join(homedir(), '.ryukproxy', 'ryukproxy.pid');
@@ -10,6 +11,9 @@ const PORT = process.env.RYUKPROXY_PORT ?? '8931';
 
 /** Budget for the one probe taken before deciding whether to spawn anything. */
 const INITIAL_PROBE_TIMEOUT_MS = 250;
+
+/** Signals that mean "the user ended it", which need no error message. */
+const QUIET_SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGPIPE']);
 
 function isProcessRunning(pid: number): boolean {
   try {
@@ -147,8 +151,19 @@ export async function runClaudeWithProxy(args: string[]): Promise<void> {
   }
 
   if (result.signal) {
-    process.stderr.write(`ryukproxy: claude was terminated by signal ${result.signal}\n`);
-    process.exit(1);
+    // Report a signal death the way a shell does, as 128 + the signal number,
+    // rather than flattening it to 1. The wrapper is meant to be transparent
+    // enough to alias over `claude`, and a script checking the exit code should
+    // be able to tell "interrupted" from "claude exited 1".
+    const signalNumber = constants.signals[result.signal as keyof typeof constants.signals];
+
+    // Ctrl-C and friends are how people end a session, not failures worth a
+    // message. Anything else is unexpected enough to say out loud.
+    if (!QUIET_SIGNALS.has(result.signal)) {
+      process.stderr.write(`ryukproxy: claude was terminated by signal ${result.signal}\n`);
+    }
+
+    process.exit(signalNumber ? 128 + signalNumber : 1);
     return;
   }
 

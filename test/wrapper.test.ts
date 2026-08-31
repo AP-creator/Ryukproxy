@@ -350,6 +350,38 @@ describe('runClaudeWithProxy', () => {
     }
   });
 
+  it.each([
+    // Ctrl-C: how people actually end a session. 130 is what a shell reports,
+    // and there is nothing to warn about.
+    ['SIGINT', 130, false],
+    ['SIGTERM', 143, false],
+    // Unexpected enough to say out loud, but still reported as a signal death.
+    ['SIGSEGV', 139, true],
+  ])('reports a %s death as %i', async (signal, expectedCode, expectMessage) => {
+    const spawnSyncMock = vi.fn(() => ({ status: null, error: undefined, signal }));
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    stubFs();
+
+    vi.doMock('node:child_process', () => ({
+      spawn: vi.fn(),
+      spawnSync: spawnSyncMock,
+    }));
+
+    stubHealthProbe(['healthy']);
+
+    const { runClaudeWithProxy } = await import('../src/wrapper.js');
+    await runClaudeWithProxy(['--version']);
+
+    expect(exitSpy).toHaveBeenCalledWith(expectedCode);
+    if (expectMessage) {
+      expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining(signal));
+    } else {
+      expect(stderrSpy).not.toHaveBeenCalled();
+    }
+  });
+
   it('exits with a clear error, not a silent 0, when spawnSync fails to launch claude', async () => {
     const spawnSyncMock = vi.fn(() => ({
       status: null,
