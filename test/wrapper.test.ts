@@ -85,6 +85,34 @@ describe('ensureProxyRunning', () => {
     expect(writeFileSyncMock).toHaveBeenCalledWith(expect.stringContaining('ryukproxy.pid'), '4242');
   });
 
+  it('starts the proxy detached, silent, and without a console window', async () => {
+    // Each of these matters for a background process the user never sees:
+    // detached so it outlives the session, ignored stdio so it does not write
+    // into the terminal, and windowsHide so Windows does not flash a console
+    // open every time a session starts one.
+    const spawnMock = vi.fn(() => ({ pid: 4242, unref: vi.fn() }));
+
+    stubFs();
+    vi.doMock('node:child_process', () => ({ spawn: spawnMock, spawnSync: vi.fn() }));
+    stubHealthProbe(['down', 'healthy']);
+    vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === 4242) return true;
+      throw new Error('ESRCH');
+    });
+
+    const { ensureProxyRunning } = await import('../src/wrapper.js');
+    await ensureProxyRunning();
+
+    const [, , options] = spawnMock.mock.calls[0] as [
+      string,
+      string[],
+      Record<string, unknown>,
+    ];
+    expect(options.detached).toBe(true);
+    expect(options.stdio).toBe('ignore');
+    expect(options.windowsHide).toBe(true);
+  });
+
   it('unrefs the spawned proxy so the launcher is not held open by it', async () => {
     // The proxy outlives this process by design. Without unref, node keeps the
     // wrapper alive waiting on a child that never exits.

@@ -131,6 +131,9 @@ export async function ensureProxyRunning(): Promise<boolean> {
     const child = spawn(process.execPath, [entryPoint], {
       detached: true,
       stdio: 'ignore',
+      // On Windows a detached child gets its own console, which would flash a
+      // window open every time a session starts one. No effect elsewhere.
+      windowsHide: true,
       env: {
         ...process.env,
         RYUKPROXY_PORT: PORT,
