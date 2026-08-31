@@ -224,6 +224,15 @@ describe('ensureProxyRunning', () => {
     // returning true just because spawn() didn't throw.
     stubHealthProbe(['down']);
 
+    // Report the child as alive, so the health check is the ONLY thing that can
+    // produce a false here. Without this the test passes even when the health
+    // result is ignored, because the fake pid happens not to be a live process
+    // and the liveness gate below catches it instead.
+    vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === 4242) return true;
+      throw new Error('ESRCH');
+    });
+
     const { ensureProxyRunning } = await import('../src/wrapper.js');
     const started = await ensureProxyRunning();
 

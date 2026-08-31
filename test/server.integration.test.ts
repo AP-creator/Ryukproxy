@@ -155,11 +155,31 @@ describe('createProxyServer', () => {
     process.env.RYUKPROXY_LOG_PATH = previousLogPath;
 
     try {
-      const response = await fetch(`${url}${HEALTH_PATH}`);
-      expect(response.status).toBe(200);
+      const health = await fetch(`${url}${HEALTH_PATH}`);
+      expect(health.status).toBe(200);
 
-      // A probe is not proxied traffic; counting it would skew `ryukproxy stats`.
-      await expect(readFile(ownLogPath, 'utf8')).rejects.toThrow(/ENOENT/);
+      // Then a request that SHOULD be logged. Waiting for its line to land is
+      // what makes this race-free: logging happens after the response is sent,
+      // so simply checking for an absent file right after the probe would pass
+      // even if the probe had been logged.
+      const proxied = await fetch(`${url}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: [] }),
+      });
+      expect(proxied.status).toBe(200);
+
+      let lines: string[] = [];
+      for (let attempt = 0; attempt < 50 && lines.length === 0; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        lines = (await readFile(ownLogPath, 'utf8').catch(() => ''))
+          .split('\n')
+          .filter((line) => line.trim() !== '');
+      }
+
+      // Exactly one: the proxied request. A probe is not proxied traffic, and
+      // counting it would skew `ryukproxy stats`.
+      expect(lines).toHaveLength(1);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -423,11 +443,22 @@ describe('backpressure', () => {
     // dropped a chunk, the bytes here would not add up.
     const chunk = Buffer.alloc(64 * 1024, 0x61);
     const chunkCount = 64; // 4 MiB total
+    const clientStallMs = 250;
     const slowUpstream = createServer((req, res) => {
       req.resume();
       res.writeHead(200, { 'content-type': 'application/octet-stream' });
-      for (let i = 0; i < chunkCount; i++) res.write(chunk);
-      res.end();
+      let index = 0;
+      const pump = () => {
+        while (index < chunkCount) {
+          index++;
+          if (!res.write(chunk)) {
+            res.once('drain', pump);
+            return;
+          }
+        }
+        res.end();
+      };
+      pump();
     });
     const slowUpstreamUrl = await listen(slowUpstream);
     const { url, server } = await startProxyAgainst(slowUpstreamUrl);
@@ -458,7 +489,7 @@ describe('backpressure', () => {
                 // for.
                 firstChunk = false;
                 response.pause();
-                setTimeout(() => response.resume(), 150);
+                setTimeout(() => response.resume(), clientStallMs);
               }
             });
             response.on('end', () => resolve({ total: received, allBytesCorrect: correct }));
@@ -471,6 +502,17 @@ describe('backpressure', () => {
 
       expect(total).toBe(chunk.length * chunkCount);
       expect(allBytesCorrect).toBe(true);
+
+      // NOTE ON WHAT THIS DOES AND DOES NOT PROVE. It exercises the drain path
+      // (instrumented at the time: the wait is entered once here) and pins that
+      // the path delivers every byte in order rather than hanging or dropping a
+      // chunk. It does NOT assert that backpressure reaches the upstream, and
+      // it passes with the drain wait removed. Two black-box signals were tried
+      // and rejected as unreliable: timing, because the socket and undici
+      // buffers absorb anything under ~16 MiB so the upstream finishes either
+      // way; and peak memory, which does differ (~30 MiB against ~43 MiB) but
+      // by a margin too environment-dependent to assert on. Left honest rather
+      // than dressed up as a guarantee it cannot make.
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await new Promise<void>((resolve) => slowUpstream.close(() => resolve()));
