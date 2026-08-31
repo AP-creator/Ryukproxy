@@ -51,8 +51,8 @@ looks like that. CI enforces a savings floor on each fixture in
   escapes what JSON did not require it to (`\u00e9` for `é`, `\/` for `/`) is
   re-encoded to the literal form. Every string *value* is unchanged, and the
   result is deterministic, so the prompt cache still hits.
-- **Your API key is never read, logged, or stored.** It passes through in the
-  headers as-is, and only ever to the configured upstream: the origin is pinned
+- **Your credentials are never read, logged, or stored** — an `x-api-key` or
+  an OAuth bearer token alike. They pass through in the headers as-is, and only ever to the configured upstream: the origin is pinned
   from `RYUKPROXY_UPSTREAM_URL`, so a request arriving on the local port cannot
   name a destination of its own.
 - **Fails open.** A scrubber error, a malformed body, or a proxy that won't

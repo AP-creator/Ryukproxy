@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, request as httpRequest, Server } from 'node:http';
+import { connect as netConnect } from 'node:net';
 import { readFile, writeFile } from 'node:fs/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -648,6 +649,41 @@ describe('fail-open guarantees', () => {
     expect(forwarded.messages[0].content[0].content).toBe('Done');
     expect(forwarded.messages[1].content).toBeNull();
     expect(forwarded.messages[2].content[0].content).toBe('Also done');
+  });
+
+  it('survives a client vanishing mid-request and keeps serving later requests', async () => {
+    // The suite covers a client aborting mid-RESPONSE; this is the other half.
+    // readRequestBody rejects, and the handler then tries to send a 502 on a
+    // socket that is already gone -- an 'error' emitted on `res` at that point
+    // has no listener yet, which is how a proxy dies from a client hanging up.
+    const abortPort = Number(new URL(proxyUrl).port);
+
+    await new Promise<void>((resolve) => {
+      const socket = netConnect({ host: '127.0.0.1', port: abortPort }, () => {
+        // Announce a body far larger than what actually gets sent.
+        socket.write(
+          'POST /v1/messages HTTP/1.1\r\n' +
+            `Host: 127.0.0.1:${abortPort}\r\n` +
+            'Content-Type: application/json\r\n' +
+            'Content-Length: 100000\r\n\r\n' +
+            '{"messages":'
+        );
+        setTimeout(() => {
+          socket.destroy();
+          resolve();
+        }, 60);
+      });
+      socket.on('error', () => resolve());
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const response = await fetch(`${proxyUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(response.status).toBe(200);
   });
 
   it('returns a clean 502 (not a crash) when the upstream is unreachable, and keeps serving later requests', async () => {
