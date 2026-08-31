@@ -285,6 +285,47 @@ describe('upstream origin pinning', () => {
   });
 });
 
+describe('upstream redirects', () => {
+  it('passes a 3xx back to the client instead of following it', async () => {
+    // fetch() follows redirects by default. For a proxy that is wrong twice
+    // over: the 3xx is the client's to act on, and following it would resend
+    // the request -- x-api-key included -- to whatever host the Location names.
+    let redirectTargetHit = false;
+    const redirectTarget = createServer((req, res) => {
+      redirectTargetHit = true;
+      req.resume();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"followed":true}');
+    });
+    const redirectTargetUrl = await listen(redirectTarget);
+
+    const redirectingUpstream = createServer((req, res) => {
+      req.resume();
+      res.writeHead(302, { location: `${redirectTargetUrl}/v1/messages` });
+      res.end();
+    });
+    const redirectingUpstreamUrl = await listen(redirectingUpstream);
+    const { url, server } = await startProxyAgainst(redirectingUpstreamUrl);
+
+    try {
+      const response = await fetch(`${url}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': 'secret' },
+        body: '{"messages":[]}',
+        redirect: 'manual',
+      });
+
+      expect(response.status).toBe(302);
+      expect(response.headers.get('location')).toBe(`${redirectTargetUrl}/v1/messages`);
+      expect(redirectTargetHit).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => redirectingUpstream.close(() => resolve()));
+      await new Promise<void>((resolve) => redirectTarget.close(() => resolve()));
+    }
+  });
+});
+
 describe('response header fidelity', () => {
   it('keeps multiple Set-Cookie headers separate', async () => {
     // Iterating a fetch Headers object joins repeated values with ', ', which

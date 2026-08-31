@@ -58,6 +58,11 @@ export async function forwardRequest(
     method: upstreamMethod,
     headers: forwardHeaders,
     body: BODYLESS_METHODS.has(upstreamMethod) ? undefined : toBodyInit(body),
+    // fetch() follows redirects by default, which is wrong for a proxy twice
+    // over: a 3xx is the client's to act on, and following it would resend the
+    // request -- x-api-key included -- to whatever host the Location names.
+    // Hand the 3xx back and let the client decide.
+    redirect: 'manual',
   });
 }
 
