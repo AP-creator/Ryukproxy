@@ -37,6 +37,15 @@ describe('resolveUpstreamForProxy', () => {
     }
   });
 
+  it('refuses a self-reference that relies on the scheme default port', () => {
+    // url.port is empty for a default port, so a naive comparison misses this
+    // and the proxy ends up forwarding to itself.
+    expect(resolveUpstreamForProxy({ ANTHROPIC_BASE_URL: 'http://127.0.0.1' }, '80')).toBeUndefined();
+    expect(
+      resolveUpstreamForProxy({ ANTHROPIC_BASE_URL: 'https://localhost' }, '443')
+    ).toBeUndefined();
+  });
+
   it('still adopts a loopback URL on a different port', () => {
     // A local mock or a second proxy is a legitimate upstream.
     expect(resolveUpstreamForProxy({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:9999' }, '8931')).toBe(

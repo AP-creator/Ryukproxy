@@ -1,9 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { writeFileSync, mkdirSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { constants, homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { constants } from 'node:os';
 import { HEALTH_PATH, HEALTH_SERVICE_ID } from './health.js';
 
 const PID_FILE = join(homedir(), '.ryukproxy', 'ryukproxy.pid');
@@ -42,7 +41,11 @@ export function resolveUpstreamForProxy(
 
   try {
     const url = new URL(existing);
-    const isSelf = LOOPBACK_HOSTS.has(url.hostname) && url.port === port;
+    // `url.port` is empty when the URL uses its scheme's default, so compare
+    // effective ports: http://127.0.0.1 against a proxy on port 80 is the same
+    // self-reference as http://127.0.0.1:8931 against one on 8931.
+    const effectivePort = url.port || (url.protocol === 'https:' ? '443' : '80');
+    const isSelf = LOOPBACK_HOSTS.has(url.hostname) && effectivePort === port;
     return isSelf ? undefined : existing;
   } catch {
     // Not a URL we can reason about — leave the proxy on its default.
