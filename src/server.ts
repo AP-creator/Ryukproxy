@@ -1,4 +1,4 @@
-import { createServer, IncomingMessage, Server } from 'node:http';
+import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { parse as losslessParse, stringify as losslessStringify } from 'lossless-json';
 import { scrubRequestBody } from './scrub-body.js';
 import type { AnthropicRequestBody } from './types.js';
@@ -21,6 +21,28 @@ function readRequestBody(req: IncomingMessage): Promise<Buffer> {
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
+  });
+}
+
+/**
+ * Resolve once the response socket can accept more data.
+ *
+ * Also resolves on 'close' and 'error': a client that disappears mid-stream
+ * never drains, and waiting for a 'drain' that can no longer come would hang
+ * this request forever, holding the upstream stream open with it. The caller's
+ * clientGone check then ends the pump on the next turn of the loop.
+ */
+function waitForDrain(res: ServerResponse): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      res.off('drain', finish);
+      res.off('close', finish);
+      res.off('error', finish);
+      resolve();
+    };
+    res.once('drain', finish);
+    res.once('close', finish);
+    res.once('error', finish);
   });
 }
 
@@ -155,7 +177,14 @@ export function createProxyServer(): Server {
             await reader.cancel().catch(() => {});
             break;
           }
-          res.write(value);
+          // res.write() returning false means the socket buffer is full.
+          // Ignoring it and reading on regardless would accumulate the whole
+          // upstream body in this process's memory whenever the client reads
+          // slower than the API sends. Waiting for 'drain' pushes that
+          // backpressure up to the upstream read instead.
+          if (!res.write(value)) {
+            await waitForDrain(res);
+          }
         }
       }
       if (!res.writableEnded) res.end();

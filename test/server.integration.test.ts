@@ -285,6 +285,68 @@ describe('upstream origin pinning', () => {
   });
 });
 
+describe('backpressure', () => {
+  it('delivers a large response intact to a slow reader', async () => {
+    // Big enough to overflow the socket buffer several times, so res.write()
+    // returns false and the drain path actually runs. If that path hung or
+    // dropped a chunk, the bytes here would not add up.
+    const chunk = Buffer.alloc(64 * 1024, 0x61);
+    const chunkCount = 64; // 4 MiB total
+    const slowUpstream = createServer((req, res) => {
+      req.resume();
+      res.writeHead(200, { 'content-type': 'application/octet-stream' });
+      for (let i = 0; i < chunkCount; i++) res.write(chunk);
+      res.end();
+    });
+    const slowUpstreamUrl = await listen(slowUpstream);
+    const { url, server } = await startProxyAgainst(slowUpstreamUrl);
+
+    try {
+      const { total, allBytesCorrect } = await new Promise<{
+        total: number;
+        allBytesCorrect: boolean;
+      }>((resolve, reject) => {
+        const request = httpRequest(
+          {
+            hostname: '127.0.0.1',
+            port: Number(new URL(url).port),
+            path: '/v1/messages',
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+          },
+          (response) => {
+            let received = 0;
+            let correct = true;
+            let firstChunk = true;
+            response.on('data', (data: Buffer) => {
+              received += data.length;
+              if (!data.every((byte) => byte === 0x61)) correct = false;
+              if (firstChunk) {
+                // Stall once so the proxy's socket buffer fills while the
+                // upstream keeps pushing — that is the condition drain exists
+                // for.
+                firstChunk = false;
+                response.pause();
+                setTimeout(() => response.resume(), 150);
+              }
+            });
+            response.on('end', () => resolve({ total: received, allBytesCorrect: correct }));
+            response.on('error', reject);
+          }
+        );
+        request.on('error', reject);
+        request.end(JSON.stringify({ messages: [] }));
+      });
+
+      expect(total).toBe(chunk.length * chunkCount);
+      expect(allBytesCorrect).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => slowUpstream.close(() => resolve()));
+    }
+  }, 20000);
+});
+
 describe('binary and non-JSON request bodies', () => {
   it('forwards a binary body byte-for-byte instead of round-tripping it through UTF-8', async () => {
     // Claude Code uploads to /v1/files as multipart/form-data with raw bytes in
