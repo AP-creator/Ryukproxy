@@ -13,7 +13,7 @@ const BODYLESS_METHODS = new Set(['GET', 'HEAD']);
  * turned into a 502 and the request never reached the API at all -- a
  * fail-closed path in a proxy whose whole design is to fail open.
  */
-const HOP_BY_HOP_HEADERS = new Set([
+export const HOP_BY_HOP_HEADERS = new Set([
   'connection',
   'keep-alive',
   'proxy-connection',
@@ -21,10 +21,23 @@ const HOP_BY_HOP_HEADERS = new Set([
   'trailer',
   'transfer-encoding',
   'upgrade',
-  // Recomputed by fetch for the request it actually sends.
-  'host',
-  'content-length',
 ]);
+
+/** Headers the transport recomputes for the request it actually sends. */
+const TRANSPORT_HEADERS = new Set(['host', 'content-length']);
+
+/**
+ * The header names a `Connection` value marks as scoped to that hop, which is
+ * the actual RFC rule rather than a fixed list.
+ */
+export function connectionScopedNames(connectionValue: string | undefined): Set<string> {
+  return new Set(
+    (connectionValue ?? '')
+      .split(',')
+      .map((token) => token.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
 
 /**
  * Drop the connection-scoped headers, keeping everything the API cares about
@@ -34,17 +47,14 @@ const HOP_BY_HOP_HEADERS = new Set([
  * this hop, so those are dropped too.
  */
 function forwardableHeaders(headers: Record<string, string>): Record<string, string> {
-  const connectionScoped = new Set(
-    (headers['connection'] ?? '')
-      .split(',')
-      .map((token) => token.trim().toLowerCase())
-      .filter(Boolean)
-  );
+  const connectionScoped = connectionScopedNames(headers['connection']);
 
   const forwardable: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
     const key = name.toLowerCase();
-    if (HOP_BY_HOP_HEADERS.has(key) || connectionScoped.has(key)) continue;
+    if (HOP_BY_HOP_HEADERS.has(key) || TRANSPORT_HEADERS.has(key) || connectionScoped.has(key)) {
+      continue;
+    }
     forwardable[name] = value;
   }
   return forwardable;

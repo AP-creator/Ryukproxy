@@ -327,6 +327,50 @@ describe('upstream redirects', () => {
 });
 
 describe('response header fidelity', () => {
+  it('does not relay headers scoped to the upstream connection', async () => {
+    // These describe the proxy's hop to the upstream, not the client's hop to
+    // the proxy. An `upgrade` in particular can invite the client to attempt a
+    // protocol switch this proxy cannot service.
+    const hopUpstream = createServer((req, res) => {
+      req.resume();
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'keep-alive': 'timeout=5, max=100',
+        'upgrade': 'h2c',
+        'proxy-connection': 'keep-alive',
+        'connection': 'keep-alive, x-hop-header',
+        'x-hop-header': 'should-not-reach-client',
+        'x-real-header': 'should-reach-client',
+      });
+      res.end('{"ok":true}');
+    });
+    const hopUpstreamUrl = await listen(hopUpstream);
+    const { url, server } = await startProxyAgainst(hopUpstreamUrl);
+
+    try {
+      const response = await fetch(`${url}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{"messages":[]}',
+      });
+
+      expect(response.status).toBe(200);
+      for (const dropped of ['upgrade', 'proxy-connection', 'x-hop-header']) {
+        expect(response.headers.get(dropped), `relayed ${dropped}`).toBeNull();
+      }
+      // Node sets its own Keep-Alive for the client's connection, which is
+      // legitimate; what must not survive is the upstream's, describing a hop
+      // the client is not on.
+      expect(response.headers.get('keep-alive') ?? '').not.toContain('max=100');
+      // Everything the upstream actually meant for the client still arrives.
+      expect(response.headers.get('x-real-header')).toBe('should-reach-client');
+      expect(response.headers.get('content-type')).toBe('application/json');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => hopUpstream.close(() => resolve()));
+    }
+  });
+
   it('keeps multiple Set-Cookie headers separate', async () => {
     // Iterating a fetch Headers object joins repeated values with ', ', which
     // is fine for most headers and wrong for set-cookie: two cookies become

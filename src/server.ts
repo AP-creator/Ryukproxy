@@ -2,7 +2,12 @@ import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http
 import { parse as losslessParse, stringify as losslessStringify } from 'lossless-json';
 import { scrubRequestBody } from './scrub-body.js';
 import type { AnthropicRequestBody } from './types.js';
-import { forwardRequest, DEFAULT_UPSTREAM_URL } from './forwarder.js';
+import {
+  forwardRequest,
+  DEFAULT_UPSTREAM_URL,
+  HOP_BY_HOP_HEADERS,
+  connectionScopedNames,
+} from './forwarder.js';
 import { logScrubEvent, DEFAULT_LOG_PATH } from './logger.js';
 import { HEALTH_PATH, HEALTH_SERVICE_ID } from './health.js';
 
@@ -130,8 +135,18 @@ export function createProxyServer(): Server {
         upstreamUrl
       );
 
+      // Headers scoped to the proxy's connection with the upstream describe a
+      // hop the client is not on. Relaying them misinforms it at best, and an
+      // `upgrade` can invite it to attempt a protocol switch this proxy cannot
+      // service. Same rule as the request direction, including any header the
+      // upstream's own Connection value names.
+      const upstreamConnectionScoped = connectionScopedNames(
+        upstreamResponse.headers.get('connection') ?? undefined
+      );
       const responseHeaders: Record<string, string | string[]> = {};
       upstreamResponse.headers.forEach((value, key) => {
+        const name = key.toLowerCase();
+        if (HOP_BY_HOP_HEADERS.has(name) || upstreamConnectionScoped.has(name)) return;
         responseHeaders[key] = value;
       });
       // forEach visits each set-cookie separately and the assignment above
@@ -151,12 +166,11 @@ export function createProxyServer(): Server {
       // headers and let Node reframe the response from the real decompressed
       // bytes; otherwise a compressed upstream response reaches the client as a
       // gzip-labelled but already-decompressed body (decode failure/truncation).
-      // This list is deliberately scoped to the framing headers that break given
-      // undici's auto-decompression — not a general hop-by-hop header scrub.
+      // These two are a separate concern from the hop-by-hop scrub above: they
+      // are dropped because the bytes no longer match what they describe, not
+      // because they belong to another hop.
       delete responseHeaders['content-encoding'];
       delete responseHeaders['content-length'];
-      delete responseHeaders['transfer-encoding'];
-      delete responseHeaders['connection'];
       res.writeHead(upstreamResponse.status, responseHeaders);
 
       // A client that disconnects mid-stream makes `res` emit 'error' (EPIPE /
