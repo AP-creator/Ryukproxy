@@ -38,8 +38,12 @@ looks like that. CI enforces a savings floor on each fixture in
 - **Lossless only.** No summarization, no semantic compression, no image
   conversion. The scrubber has no code path that removes content it does not
   recognize as terminal-redraw noise.
-- **Requests only.** Responses stream back byte-for-byte untouched, so
-  Ryukproxy can never alter what the model says.
+- **Requests only.** The response *body* streams back byte-for-byte, so
+  Ryukproxy can never alter what the model says. The only response headers it
+  touches are ones that would otherwise mislead your client: those describing
+  the proxy's own connection to the upstream, and `content-encoding` /
+  `content-length`, which stop matching the bytes once the body is
+  decompressed on the way through.
 - **`tool_result` only.** `system`, tool definitions, your messages, and
   Claude's messages pass through unmodified.
 - **Non-JSON requests are byte-exact.** A multipart file upload is forwarded
@@ -52,9 +56,11 @@ looks like that. CI enforces a savings floor on each fixture in
   re-encoded to the literal form. Every string *value* is unchanged, and the
   result is deterministic, so the prompt cache still hits.
 - **Your credentials are never read, logged, or stored** — an `x-api-key` or
-  an OAuth bearer token alike. They pass through in the headers as-is, and only ever to the configured upstream: the origin is pinned
-  from `RYUKPROXY_UPSTREAM_URL`, so a request arriving on the local port cannot
-  name a destination of its own.
+  an OAuth bearer token alike. They pass through in the headers as-is, and only
+  ever to the configured upstream. Two things enforce that: the origin is
+  pinned, so a request arriving on the local port cannot name a destination of
+  its own, and redirects are handed back to your client rather than followed,
+  so the upstream cannot send your credentials somewhere else either.
 - **Fails open.** A scrubber error, a malformed body, or a proxy that won't
   start degrades to "no savings", never to a blocked session or corrupted
   content.
