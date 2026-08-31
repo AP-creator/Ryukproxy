@@ -31,6 +31,26 @@ function looksLikeJson(contentType: string | undefined): boolean {
   return contentType === undefined || contentType === '' || contentType.includes('json');
 }
 
+export const DEFAULT_PORT = 8931;
+
+/**
+ * Turn RYUKPROXY_PORT into a port number, or say clearly why it can't.
+ *
+ * `Number('eight thousand')` is NaN, and `listen(NaN)` quietly binds a random
+ * free port instead of failing — the launcher would then probe 8931, find
+ * nothing, and fall back to an unproxied session with no indication that a
+ * typo was the cause.
+ */
+export function resolvePort(raw: string | undefined): number {
+  if (raw === undefined || raw === '') return DEFAULT_PORT;
+
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`RYUKPROXY_PORT must be an integer between 1 and 65535, got ${JSON.stringify(raw)}`);
+  }
+  return port;
+}
+
 export function createProxyServer(): Server {
   const upstreamUrl = process.env.RYUKPROXY_UPSTREAM_URL ?? DEFAULT_UPSTREAM_URL;
   const logPath = process.env.RYUKPROXY_LOG_PATH ?? DEFAULT_LOG_PATH;

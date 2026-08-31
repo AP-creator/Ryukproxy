@@ -33,6 +33,36 @@ describe('logScrubEvent', () => {
     });
   });
 
+  it('writes only the three size fields, dropping anything else it is handed', async () => {
+    // The privacy guarantee, pinned: the logger picks its fields explicitly
+    // rather than serialising whatever it was given. A future refactor to
+    // JSON.stringify(event) would look harmless and would start writing the
+    // API key or request content straight to disk the moment a caller passed
+    // one through.
+    tempDir = await mkdtemp(join(tmpdir(), 'ryukproxy-test-'));
+    const logPath = join(tempDir, 'events.jsonl');
+
+    await logScrubEvent(
+      {
+        timestamp: '2026-07-16T00:00:00.000Z',
+        bytesBefore: 10,
+        bytesAfter: 5,
+        apiKey: 'sk-ant-must-never-be-written',
+        body: 'tool_result content that must never be written',
+      } as never,
+      logPath
+    );
+
+    const contents = await readFile(logPath, 'utf8');
+    expect(contents).not.toContain('sk-ant');
+    expect(contents).not.toContain('tool_result content');
+    expect(Object.keys(JSON.parse(contents.trim())).sort()).toEqual([
+      'bytesAfter',
+      'bytesBefore',
+      'timestamp',
+    ]);
+  });
+
   it('appends subsequent events as additional lines rather than overwriting', async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'ryukproxy-test-'));
     const logPath = join(tempDir, 'events.jsonl');
