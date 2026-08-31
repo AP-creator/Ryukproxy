@@ -95,10 +95,12 @@ risk dropping something real.
 Requires Node.js 22 or newer.
 
 ```bash
-npm install
-npm run build
+npm install       # also builds, via the prepare script
 npm link          # puts `ryukproxy` on your PATH
 ```
+
+The build is not a step you can forget: without `dist/`, `npm link` reports
+success and silently creates no command at all, so it runs on install.
 
 ## Usage
 
