@@ -410,11 +410,11 @@ describe('fail-open guarantees', () => {
     expect(receivedBody).toBe(malformedBody);
   });
 
-  it('forwards the original raw body unmodified when scrubRequestBody throws (messages not an array)', async () => {
-    // `messages` must be an array per AnthropicRequestBody; scrubRequestBody calls
-    // body.messages.map(...), which throws a TypeError when messages is e.g. a string.
-    // The body is still valid JSON, so this exercises the scrub-time failure path
-    // rather than the JSON.parse failure path exercised above.
+  it('forwards a body whose messages is not an array unmodified', async () => {
+    // Valid JSON, so this exercises the scrub path rather than the JSON.parse
+    // failure path above. `messages` must be an array per AnthropicRequestBody;
+    // anything else the scrubber declines to walk at all, and the body goes
+    // upstream exactly as it arrived.
     const bodyWithInvalidMessages = JSON.stringify({ messages: 'not-an-array' });
 
     const response = await fetch(`${proxyUrl}/v1/messages`, {
@@ -425,6 +425,37 @@ describe('fail-open guarantees', () => {
 
     expect(response.status).toBe(200);
     expect(receivedBody).toBe(bodyWithInvalidMessages);
+  });
+
+  it('still scrubs the healthy messages when one message in the request is malformed', async () => {
+    // Failing open per block rather than per request: Claude Code replays the
+    // whole history every turn, so one odd block dropping the scrub for the
+    // entire conversation would keep costing on every turn after it appears.
+    const body = JSON.stringify({
+      messages: [
+        {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'a', content: 'x\rx\rDone' }],
+        },
+        { role: 'user', content: null },
+        {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'b', content: 'y\ry\rAlso done' }],
+        },
+      ],
+    });
+
+    const response = await fetch(`${proxyUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+
+    expect(response.status).toBe(200);
+    const forwarded = JSON.parse(receivedBody);
+    expect(forwarded.messages[0].content[0].content).toBe('Done');
+    expect(forwarded.messages[1].content).toBeNull();
+    expect(forwarded.messages[2].content[0].content).toBe('Also done');
   });
 
   it('returns a clean 502 (not a crash) when the upstream is unreachable, and keeps serving later requests', async () => {
