@@ -121,12 +121,21 @@ export async function runClaudeWithProxy(args: string[]): Promise<void> {
     env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${PORT}`;
   }
 
-  // shell: true is required on Windows so that `claude` (which resolves via
-  // PATH to a claude.cmd/claude.ps1 shim, not a real .exe) can be found at
-  // all — spawnSync cannot resolve shell shims without a shell. Safe here
-  // because `args` is the user's own argv (process.argv.slice(2)), not
-  // untrusted input.
-  const result = spawnSync('claude', args, { stdio: 'inherit', env, shell: true });
+  // A shell is required on Windows and ONLY on Windows: `claude` resolves via
+  // PATH to a claude.cmd/claude.ps1 shim rather than a real .exe, and spawnSync
+  // cannot execute a shell shim without one.
+  //
+  // Everywhere else it must be off. With a shell, Node joins argv into a single
+  // command string, so `--print "hello world"` reaches claude as three
+  // arguments instead of two, and any backtick, $(), ;, | or > in a prompt is
+  // interpreted by the shell rather than passed along -- the user's own text
+  // silently becoming a command to run. Without a shell, argv is handed over
+  // exactly as given.
+  const result = spawnSync('claude', args, {
+    stdio: 'inherit',
+    env,
+    shell: process.platform === 'win32',
+  });
 
   if (result.error) {
     // spawnSync failed outright (e.g. claude isn't installed at all).

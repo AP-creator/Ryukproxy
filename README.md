@@ -103,6 +103,10 @@ ryukproxy               # same as `claude`
 ryukproxy --print "hi"  # every argument is passed straight through
 ```
 
+Arguments reach `claude` exactly as you typed them — quoting intact, and no
+shell interpretation, so a prompt containing backticks, `$(...)`, `;` or `|`
+is text, not something that runs.
+
 The wrapper:
 
 1. Asks `http://127.0.0.1:8931/__ryukproxy/health` whether Ryukproxy is

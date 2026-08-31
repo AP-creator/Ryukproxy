@@ -309,25 +309,45 @@ describe('runClaudeWithProxy', () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 
-  it('calls spawnSync with shell: true so Windows .cmd/.ps1 shims resolve', async () => {
+  it.each([
+    // A shell is what lets Windows resolve claude.cmd/claude.ps1, which are not
+    // executables spawnSync can run directly.
+    ['win32', true],
+    // Everywhere else it must be off: a shell joins argv into one command
+    // string, splitting quoted arguments and executing any metacharacters the
+    // user's prompt happens to contain.
+    ['linux', false],
+    ['darwin', false],
+  ])('uses shell only on Windows (%s -> shell: %s)', async (platform, expectedShell) => {
     const spawnSyncMock = vi.fn(() => ({ status: 0, error: undefined, signal: null }));
     vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
 
-    stubFs();
+    const realPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
 
-    vi.doMock('node:child_process', () => ({
-      spawn: vi.fn(),
-      spawnSync: spawnSyncMock,
-    }));
+    try {
+      stubFs();
 
-    // Already healthy, so the launcher short-circuits without spawning.
-    stubHealthProbe(['healthy']);
+      vi.doMock('node:child_process', () => ({
+        spawn: vi.fn(),
+        spawnSync: spawnSyncMock,
+      }));
 
-    const { runClaudeWithProxy } = await import('../src/wrapper.js');
-    await runClaudeWithProxy(['--version']);
+      // Already healthy, so the launcher short-circuits without spawning.
+      stubHealthProbe(['healthy']);
 
-    const [, , options] = spawnSyncMock.mock.calls[0] as [string, string[], Record<string, unknown>];
-    expect(options.shell).toBe(true);
+      const { runClaudeWithProxy } = await import('../src/wrapper.js');
+      await runClaudeWithProxy(['--version']);
+
+      const [, , options] = spawnSyncMock.mock.calls[0] as [
+        string,
+        string[],
+        Record<string, unknown>,
+      ];
+      expect(options.shell).toBe(expectedShell);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    }
   });
 
   it('exits with a clear error, not a silent 0, when spawnSync fails to launch claude', async () => {

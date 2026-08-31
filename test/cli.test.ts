@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +18,19 @@ function runCli(args: string[], env: NodeJS.ProcessEnv = {}) {
     cwd: repoRoot,
     env: { ...process.env, RYUKPROXY_LOG_PATH: logPath, ...env },
   });
+}
+
+/**
+ * A stub `claude` that reports its argv exactly, so a test can tell one
+ * argument containing spaces from several arguments.
+ */
+async function writeArgvStub(): Promise<string> {
+  const binDir = join(tempDir, 'bin');
+  await mkdir(binDir, { recursive: true });
+  const stub = join(binDir, 'claude');
+  await writeFile(stub, '#!/usr/bin/env bash\necho "ARGC=$#"\nprintf \'ARG:[%s]\\n\' "$@"\n', 'utf8');
+  await chmod(stub, 0o755);
+  return binDir;
 }
 
 beforeEach(async () => {
@@ -66,6 +80,44 @@ describe('ryukproxy CLI', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('No requests logged yet');
+  });
+
+  it('passes an argument containing spaces through as a single argument', async () => {
+    // Running claude through a shell joins argv into one command string, so a
+    // quoted prompt arrives split into words. Claude Code prompts routinely
+    // contain spaces.
+    const binDir = await writeArgvStub();
+
+    const result = runCli(['--print', 'hello there world'], {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      HOME: tempDir,
+      RYUKPROXY_PORT: '8977',
+    });
+
+    expect(result.stdout).toContain('ARGC=2');
+    expect(result.stdout).toContain('ARG:[--print]');
+    expect(result.stdout).toContain('ARG:[hello there world]');
+  });
+
+  it('never lets shell metacharacters in an argument be executed', async () => {
+    // Through a shell, backticks and $() in a prompt are substituted before
+    // claude ever sees them -- the user's own text silently becoming a command
+    // to run. Proven by side effect: the payload would create this file.
+    const binDir = await writeArgvStub();
+    const marker = join(tempDir, 'executed-by-shell');
+    const prompt = `explain \`touch ${marker}\` and $(touch ${marker}) please`;
+
+    const result = runCli(['--print', prompt], {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      HOME: tempDir,
+      RYUKPROXY_PORT: '8977',
+    });
+
+    // Arrives verbatim, as one argument...
+    expect(result.stdout).toContain('ARGC=2');
+    expect(result.stdout).toContain(`ARG:[${prompt}]`);
+    // ...and nothing in it ran.
+    expect(existsSync(marker)).toBe(false);
   });
 
   it('still launches claude for every other argument list', async () => {
