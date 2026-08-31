@@ -48,6 +48,28 @@ describe('scrubRequestBody', () => {
     expect(block.content[1]).toEqual({ type: 'image', source: { data: 'base64==' } });
   });
 
+  it('leaves a non-tool_result block alone even when it carries a content field', () => {
+    // isToolResultBlock is the only thing keeping the scrubber off other block
+    // types, and a block type with its own `content` is exactly where that
+    // guard earns its keep.
+    const body = {
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'document', content: 'looks\rlike\rnoise' },
+            { type: 'tool_result', tool_use_id: 'a', content: 'is\rreally\rnoise' },
+          ],
+        },
+      ],
+    } as unknown as AnthropicRequestBody;
+
+    const blocks = scrubRequestBody(body).messages[0].content as any[];
+
+    expect(blocks[0].content).toBe('looks\rlike\rnoise');
+    expect(blocks[1].content).toBe('noise');
+  });
+
   it('keeps scrubbing the other messages when one message is malformed', () => {
     // Spec, "Error handling": a scrubber failure on a given block falls back to
     // passing THAT BLOCK through unmodified. Throwing out of the whole walk

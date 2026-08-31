@@ -146,6 +146,14 @@ describe('scrubToolResultText', () => {
     }
   });
 
+  it('never collapses two blank lines, even when both were redraws', () => {
+    // Blank lines are spacing, and the collapse rule explicitly exempts them.
+    // Nothing asserted it: removing the `renderedLine !== ''` guard from the
+    // collapse condition passed the whole suite.
+    const input = '\x1b[K\n\x1b[K\nafter\n';
+    expect(scrubToolResultText(input)).toBe('\n\nafter\n');
+  });
+
   it('passes noise-free content through byte-for-byte', () => {
     // The lossless guarantee stated plainly: text with no terminal-rendering
     // noise in it must come out exactly as it went in. Each entry is a shape
