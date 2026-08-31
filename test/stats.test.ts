@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readStats, formatStats } from '../src/stats.js';
+import { readStats, formatStats, formatBytes } from '../src/stats.js';
+import { HEALTH_PATH, HEALTH_SERVICE_ID } from '../src/health.js';
 
 let tempDir: string;
 let logPath: string;
@@ -134,5 +135,25 @@ describe('formatStats', () => {
     const output = formatStats(await readStats(logPath));
 
     expect(output).toContain('1 unreadable line');
+  });
+});
+
+describe('formatBytes', () => {
+  it('switches units at the binary boundary, not the decimal one', () => {
+    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(1023)).toBe('1023 B');
+    expect(formatBytes(1024)).toBe('1.0 KB');
+    expect(formatBytes(1024 * 1024)).toBe('1.0 MB');
+    expect(formatBytes(1024 * 1024 * 1024)).toBe('1.0 GB');
+  });
+});
+
+describe('the documented health interface', () => {
+  it('keeps the exact path and service id the README tells people to curl', () => {
+    // Server and launcher share these constants, so changing them keeps the
+    // two in step and every other test passing — while breaking the one thing
+    // a person types by hand.
+    expect(HEALTH_PATH).toBe('/__ryukproxy/health');
+    expect(HEALTH_SERVICE_ID).toBe('ryukproxy');
   });
 });

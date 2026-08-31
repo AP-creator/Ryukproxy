@@ -155,6 +155,15 @@ describe('forwardRequest', () => {
     expect(receivedUrl).toBe('/v1/models');
   });
 
+  it('normalises the method before deciding whether a body is allowed', async () => {
+    // Without the uppercase, 'get' misses the bodyless-method set, a body is
+    // attached, and fetch() throws — turning the request into a 502.
+    const response = await forwardRequest('get', '/v1/models', {}, '', mockUpstreamUrl);
+
+    expect(response.status).toBe(200);
+    expect(receivedMethod).toBe('GET');
+  });
+
   it('omits the body on methods that cannot carry one', async () => {
     // fetch() throws TypeError if a GET/HEAD request is given a body, so a
     // bodyless method must reach fetch with body: undefined, not ''.

@@ -123,6 +123,50 @@ describe('createProxyServer', () => {
     expect(Object.keys(parsed).sort()).toEqual(['bytesAfter', 'bytesBefore', 'timestamp']);
   });
 
+  it('logs the scrubbed size, not the size that arrived', async () => {
+    // The savings figure is the number this whole tool exists to produce, and
+    // nothing checked it was real: logging bytesAfter as the original length
+    // passed the entire suite while reporting every request as zero savings.
+    const ownLogPath = join(tempDir, `savings-${Date.now()}.jsonl`);
+    const previousLogPath = process.env.RYUKPROXY_LOG_PATH;
+    process.env.RYUKPROXY_LOG_PATH = ownLogPath;
+    const { url, server } = await startProxyAgainst(mockUpstreamUrl);
+    process.env.RYUKPROXY_LOG_PATH = previousLogPath;
+
+    try {
+      const noisy = '\x1b[2K\rworking...\x1b[2K\rworking..\x1b[2K\rDone\n';
+      const body = JSON.stringify({
+        messages: [
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: noisy }] },
+        ],
+      });
+
+      const response = await fetch(`${url}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+      expect(response.status).toBe(200);
+
+      let event: { bytesBefore: number; bytesAfter: number } | undefined;
+      for (let attempt = 0; attempt < 50 && !event; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const line = (await readFile(ownLogPath, 'utf8').catch(() => ''))
+          .split('\n')
+          .find((candidate) => candidate.trim() !== '');
+        if (line) event = JSON.parse(line);
+      }
+
+      expect(event?.bytesBefore).toBe(Buffer.byteLength(body));
+      // The scrub removed the redraw frames, so the forwarded body is smaller,
+      // and the log has to say so.
+      expect(event!.bytesAfter).toBeLessThan(event!.bytesBefore);
+      expect(event!.bytesAfter).toBe(Buffer.byteLength(receivedBody));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('passes non-POST API traffic through with its method, path, and query intact', async () => {
     const response = await fetch(`${proxyUrl}/v1/models?limit=2`, {
       method: 'GET',

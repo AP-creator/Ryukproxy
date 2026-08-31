@@ -85,6 +85,57 @@ describe('ensureProxyRunning', () => {
     expect(writeFileSyncMock).toHaveBeenCalledWith(expect.stringContaining('ryukproxy.pid'), '4242');
   });
 
+  it('unrefs the spawned proxy so the launcher is not held open by it', async () => {
+    // The proxy outlives this process by design. Without unref, node keeps the
+    // wrapper alive waiting on a child that never exits.
+    const unref = vi.fn();
+    const spawnMock = vi.fn(() => ({ pid: 4242, unref }));
+
+    stubFs();
+    vi.doMock('node:child_process', () => ({ spawn: spawnMock, spawnSync: vi.fn() }));
+    stubHealthProbe(['down', 'healthy']);
+    vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === 4242) return true;
+      throw new Error('ESRCH');
+    });
+
+    const { ensureProxyRunning } = await import('../src/wrapper.js');
+    await ensureProxyRunning();
+
+    expect(unref).toHaveBeenCalled();
+  });
+
+  it('hands the resolved upstream to the proxy it spawns', async () => {
+    // resolveUpstreamForProxy is unit-tested on its own; this is the wiring —
+    // the child actually being started with it, so a user's gateway survives.
+    const spawnMock = vi.fn(() => ({ pid: 4242, unref: vi.fn() }));
+    const previous = process.env.ANTHROPIC_BASE_URL;
+    process.env.ANTHROPIC_BASE_URL = 'https://gw.corp.example';
+
+    try {
+      stubFs();
+      vi.doMock('node:child_process', () => ({ spawn: spawnMock, spawnSync: vi.fn() }));
+      stubHealthProbe(['down', 'healthy']);
+      vi.spyOn(process, 'kill').mockImplementation((pid) => {
+        if (pid === 4242) return true;
+        throw new Error('ESRCH');
+      });
+
+      const { ensureProxyRunning } = await import('../src/wrapper.js');
+      await ensureProxyRunning();
+
+      const [, , options] = spawnMock.mock.calls[0] as [
+        string,
+        string[],
+        { env: Record<string, string> },
+      ];
+      expect(options.env.RYUKPROXY_UPSTREAM_URL).toBe('https://gw.corp.example');
+    } finally {
+      if (previous === undefined) delete process.env.ANTHROPIC_BASE_URL;
+      else process.env.ANTHROPIC_BASE_URL = previous;
+    }
+  });
+
   it('does not spawn a second proxy when Ryukproxy already answers on the port', async () => {
     const spawnMock = vi.fn();
 
